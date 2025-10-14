@@ -54,9 +54,8 @@
         let nickname = localStorage.getItem('draft21_nickname') || '';
         let selectedCaptains = [];
         let captainColorMap = {};
-        let draftOrderMode = 'random';
-        let manualDraftOrder = [];
         let pendingPick = null;
+        let isHost = false;
 
         // Clean player names
         function cleanPlayerNames(text) {
@@ -82,12 +81,20 @@
                         players: [],
                         teams: [],
                         participants: [],
+                        captains: [],
                         picks: [],
                         turn: { order: [], index: 0, direction: 1 },
-                        settings: { snake: true }
+                        settings: { snake: true },
+                        host: null
                     });
                 } else {
                     gameState = docSnap.data();
+                    
+                    // Set host if first participant
+                    if (gameState.host === nickname || (gameState.participants.length > 0 && gameState.participants[0].name === nickname)) {
+                        isHost = true;
+                    }
+                    
                     render();
                 }
             });
@@ -104,55 +111,8 @@
             
             await updateDoc(gameDocRef, {
                 players,
-                status: 'captains'
-            });
-        }
-
-        // Toggle captain selection
-        function toggleCaptain(playerId) {
-            if (selectedCaptains.includes(playerId)) {
-                selectedCaptains = selectedCaptains.filter(id => id !== playerId);
-                delete captainColorMap[playerId];
-            } else if (selectedCaptains.length < 3) {
-                selectedCaptains.push(playerId);
-                captainColorMap[playerId] = ['אדום', 'לבן', 'שחור'][selectedCaptains.length - 1];
-            }
-            render();
-        }
-
-        // Assign color to captain
-        function assignColorToCaptain(captainId, color) {
-            captainColorMap[captainId] = color;
-            render();
-        }
-
-        // Confirm captains
-        async function confirmCaptains() {
-            const teams = selectedCaptains.map((captainId, idx) => {
-                const captain = gameState.players.find(p => p.id === captainId);
-                const color = captainColorMap[captainId] || ['אדום', 'לבן', 'שחור'][idx];
-                return {
-                    id: `team_${idx}`,
-                    name: color,
-                    captain: captain.name,
-                    captainId: captainId,
-                    players: [captain.name]
-                };
-            });
-
-            const updatedPlayers = gameState.players.map(p => ({
-                ...p,
-                available: !selectedCaptains.includes(p.id)
-            }));
-
-            await updateDoc(gameDocRef, {
-                teams,
-                players: updatedPlayers,
                 status: 'lobby'
             });
-
-            selectedCaptains = [];
-            captainColorMap = {};
         }
 
         // Join lobby
@@ -162,9 +122,18 @@
             
             const participants = gameState.participants || [];
             if (!participants.find(p => p.name === nick)) {
-                await updateDoc(gameDocRef, {
-                    participants: [...participants, { name: nick, ready: false }]
-                });
+                const newParticipants = [...participants, { name: nick, ready: false }];
+                const updates = {
+                    participants: newParticipants
+                };
+                
+                // First participant becomes host
+                if (newParticipants.length === 1) {
+                    updates.host = nick;
+                    isHost = true;
+                }
+                
+                await updateDoc(gameDocRef, updates);
             }
             render();
         }
@@ -177,19 +146,56 @@
             await updateDoc(gameDocRef, { participants });
         }
 
-        // Start draft
-        async function startDraft() {
-            let order;
-            if (draftOrderMode === 'random') {
-                order = [...gameState.participants.map(p => p.name)].sort(() => Math.random() - 0.5);
-            } else {
-                order = manualDraftOrder.length > 0 ? manualDraftOrder : gameState.participants.map(p => p.name);
-            }
-            
+        // Move to captain selection (host only)
+        async function moveToCapSelection() {
+            if (!isHost) return;
             await updateDoc(gameDocRef, {
-                status: 'drafting',
-                turn: { order, index: 0, direction: 1 }
+                status: 'captains'
             });
+        }
+
+        // Toggle captain selection
+        function toggleCaptain(participantName) {
+            if (selectedCaptains.includes(participantName)) {
+                selectedCaptains = selectedCaptains.filter(name => name !== participantName);
+                delete captainColorMap[participantName];
+            } else if (selectedCaptains.length < 3) {
+                selectedCaptains.push(participantName);
+                captainColorMap[participantName] = ['אדום', 'לבן', 'שחור'][selectedCaptains.length - 1];
+            }
+            render();
+        }
+
+        // Assign color to captain
+        function assignColorToCaptain(captainName, color) {
+            captainColorMap[captainName] = color;
+            render();
+        }
+
+        // Confirm captains
+        async function confirmCaptains() {
+            const teams = selectedCaptains.map((captainName, idx) => {
+                const color = captainColorMap[captainName] || ['אדום', 'לבן', 'שחור'][idx];
+                return {
+                    id: `team_${idx}`,
+                    name: color,
+                    captain: captainName,
+                    players: []
+                };
+            });
+
+            // Snake draft order for captains
+            const captainOrder = [...selectedCaptains];
+
+            await updateDoc(gameDocRef, {
+                teams,
+                captains: selectedCaptains,
+                status: 'drafting',
+                turn: { order: captainOrder, index: 0, direction: 1 }
+            });
+
+            selectedCaptains = [];
+            captainColorMap = {};
         }
 
         // Select player (pending)
@@ -223,38 +229,30 @@
                         throw new Error('Player not available');
                     }
 
-                    // Snake draft for teams
-                    const pickCount = data.picks.length;
-                    const round = Math.floor(pickCount / data.teams.length);
-                    let teamIndex;
-                    
-                    if (round % 2 === 0) {
-                        teamIndex = pickCount % data.teams.length;
-                    } else {
-                        teamIndex = data.teams.length - 1 - (pickCount % data.teams.length);
+                    // Find which team the current picker belongs to
+                    const pickerTeam = data.teams.find(t => t.captain === currentPicker);
+                    if (!pickerTeam) {
+                        throw new Error('Team not found');
                     }
-                    
-                    const team = data.teams[teamIndex];
 
                     const updatedPlayers = data.players.map(p =>
                         p.id === pendingPick ? { ...p, available: false } : p
                     );
 
                     const updatedTeams = data.teams.map(t =>
-                        t.id === team.id ? { ...t, players: [...t.players, player.name] } : t
+                        t.id === pickerTeam.id ? { ...t, players: [...t.players, player.name] } : t
                     );
 
                     const newPick = {
                         playerId: pendingPick,
                         playerName: player.name,
-                        team: team.name,
+                        team: pickerTeam.name,
                         picker: currentPicker,
-                        round: round + 1,
-                        pickNumber: pickCount + 1,
+                        pickNumber: data.picks.length + 1,
                         timestamp: Date.now()
                     };
 
-                    // Calculate next turn
+                    // Calculate next turn (snake draft for captains)
                     let nextIndex = data.turn.index + data.turn.direction;
                     let nextDirection = data.turn.direction;
 
@@ -266,6 +264,8 @@
                             nextIndex = 0;
                             nextDirection = 1;
                         }
+                    } else {
+                        nextIndex = nextIndex % data.turn.order.length;
                     }
 
                     const availableCount = updatedPlayers.filter(p => p.available).length;
@@ -290,16 +290,16 @@
         // Reset draft
         async function resetDraft() {
             await updateDoc(gameDocRef, {
-                status: 'lobby',
+                status: 'drafting',
                 picks: [],
-                turn: { order: gameState.turn.order, index: 0, direction: 1 },
+                turn: { order: gameState.captains, index: 0, direction: 1 },
                 players: gameState.players.map(p => ({
                     ...p,
-                    available: !gameState.teams.some(t => t.captainId === p.id)
+                    available: true
                 })),
                 teams: gameState.teams.map(t => ({
                     ...t,
-                    players: [t.captain]
+                    players: []
                 }))
             });
             pendingPick = null;
@@ -311,18 +311,19 @@
             nickname = '';
             selectedCaptains = [];
             captainColorMap = {};
-            manualDraftOrder = [];
-            draftOrderMode = 'random';
             pendingPick = null;
+            isHost = false;
 
             await setDoc(gameDocRef, {
                 status: 'setup',
                 players: [],
                 teams: [],
                 participants: [],
+                captains: [],
                 picks: [],
                 turn: { order: [], index: 0, direction: 1 },
-                settings: { snake: true }
+                settings: { snake: true },
+                host: null
             });
         }
 
@@ -343,19 +344,6 @@
             
             const url = `https://wa.me/?text=${encodeURIComponent(text)}`;
             window.open(url, '_blank');
-        }
-
-        // Move participant in manual order
-        function moveParticipantUp(index) {
-            if (index === 0) return;
-            [manualDraftOrder[index - 1], manualDraftOrder[index]] = [manualDraftOrder[index], manualDraftOrder[index - 1]];
-            render();
-        }
-
-        function moveParticipantDown(index) {
-            if (index === manualDraftOrder.length - 1) return;
-            [manualDraftOrder[index], manualDraftOrder[index + 1]] = [manualDraftOrder[index + 1], manualDraftOrder[index]];
-            render();
         }
 
         // Render function
@@ -396,96 +384,13 @@
                                         onclick="handleAddPlayers()"
                                         class="w-full bg-green-600 text-white py-4 rounded-xl font-bold text-xl hover:bg-green-700 transition-all transform hover:scale-105 shadow-lg"
                                     >
-                                        המשך לבחירת קפטנים ⚡
+                                        המשך ללובי ⚡
                                     </button>
                                     
                                     <div class="text-sm text-gray-500 text-center">
                                         💡 הדבק רשימה מוואטסאפ - המערכת תנקה אוטומטית את המספרים
                                     </div>
                                 </div>
-                            </div>
-                        </div>
-                    </div>
-                `;
-            }
-
-            // Captains Selection Phase
-            else if (gameState.status === 'captains') {
-                const captainsHtml = selectedCaptains.length > 0 ? `
-                    <div class="mb-6 p-4 bg-gray-50 rounded-xl">
-                        <h3 class="text-lg font-bold mb-3">קפטנים נבחרים - בחר צבע לכל קבוצה:</h3>
-                        <div class="space-y-3">
-                            ${selectedCaptains.map(captainId => {
-                                const captain = gameState.players.find(p => p.id === captainId);
-                                const assignedColor = captainColorMap[captainId];
-                                return `
-                                    <div class="flex items-center gap-3 bg-white p-3 rounded-lg shadow">
-                                        <span class="font-bold text-lg flex-1">${captain.name}</span>
-                                        <div class="flex gap-2">
-                                            ${['אדום', 'לבן', 'שחור'].map(color => `
-                                                <button
-                                                    onclick="assignColorToCaptain('${captainId}', '${color}')"
-                                                    class="px-4 py-2 rounded-lg font-bold transition-all ${
-                                                        assignedColor === color
-                                                            ? color === 'אדום' ? 'bg-red-500 text-white scale-110' :
-                                                              color === 'לבן' ? 'bg-gray-100 text-gray-800 border-2 border-gray-400 scale-110' :
-                                                              'bg-gray-800 text-white scale-110'
-                                                            : color === 'אדום' ? 'bg-red-200 text-red-800 hover:bg-red-300' :
-                                                              color === 'לבן' ? 'bg-gray-50 text-gray-600 border border-gray-300 hover:bg-gray-100' :
-                                                              'bg-gray-300 text-gray-700 hover:bg-gray-400'
-                                                    }"
-                                                >
-                                                    ${color}
-                                                </button>
-                                            `).join('')}
-                                        </div>
-                                    </div>
-                                `;
-                            }).join('')}
-                        </div>
-                    </div>
-                ` : '';
-
-                html = `
-                    <div class="p-4">
-                        <div class="max-w-4xl mx-auto">
-                            <div class="bg-white rounded-2xl shadow-2xl p-6 mt-8">
-                                <h2 class="text-3xl font-bold text-center mb-6 text-green-700">👑 בחר 3 קפטנים</h2>
-                                
-                                <div class="flex gap-4 mb-6">
-                                    <button
-                                        onclick="confirmCaptains()"
-                                        ${selectedCaptains.length !== 3 ? 'disabled' : ''}
-                                        class="w-full bg-green-600 text-white py-3 rounded-xl font-bold hover:bg-green-700 disabled:bg-gray-400 transition-all transform hover:scale-105 shadow-lg text-xl"
-                                    >
-                                        ✓ אישור (${selectedCaptains.length}/3)
-                                    </button>
-                                </div>
-
-                                ${captainsHtml}
-
-                                <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-                                    ${gameState.players.map(player => `
-                                        <button
-                                            onclick="toggleCaptain('${player.id}')"
-                                            class="p-4 rounded-xl font-bold text-lg transition-all transform hover:scale-105 shadow-md ${
-                                                selectedCaptains.includes(player.id)
-                                                    ? 'bg-gradient-to-br from-green-500 to-green-600 text-white shadow-xl scale-105'
-                                                    : 'bg-gray-100 text-gray-800 hover:bg-gray-200'
-                                            }"
-                                        >
-                                            ${selectedCaptains.includes(player.id) ? '👑 ' : ''}
-                                            ${player.name}
-                                        </button>
-                                    `).join('')}
-                                </div>
-                                
-                                <button
-                                    onclick="fullReset()"
-                                    class="mt-6 w-full bg-red-500 text-white py-2 rounded-lg font-bold hover:bg-red-600 text-sm"
-                                >
-                                    🔄 התחל מחדש
-                                </button>
                             </div>
                         </div>
                     </div>
@@ -517,38 +422,6 @@
                 } else {
                     const myParticipant = gameState.participants.find(p => p.name === nickname);
                     const readyCount = gameState.participants.filter(p => p.ready).length;
-                    
-                    if (draftOrderMode === 'manual' && manualDraftOrder.length === 0) {
-                        manualDraftOrder = gameState.participants.map(p => p.name);
-                    }
-
-                    const manualOrderHtml = draftOrderMode === 'manual' && manualDraftOrder.length > 0 ? `
-                        <div class="space-y-2">
-                            <p class="text-sm text-gray-600 mb-2">סדר הבחירה (גרור או השתמש בחצים):</p>
-                            ${manualDraftOrder.map((name, index) => `
-                                <div class="flex items-center gap-2 bg-white p-3 rounded-lg shadow">
-                                    <span class="font-bold text-gray-500 w-8">${index + 1}.</span>
-                                    <span class="flex-1 font-bold">${name}</span>
-                                    <div class="flex gap-1">
-                                        <button
-                                            onclick="moveParticipantUp(${index})"
-                                            ${index === 0 ? 'disabled' : ''}
-                                            class="px-2 py-1 bg-blue-500 text-white rounded hover:bg-blue-600 disabled:bg-gray-300 disabled:cursor-not-allowed"
-                                        >
-                                            ▲
-                                        </button>
-                                        <button
-                                            onclick="moveParticipantDown(${index})"
-                                            ${index === manualDraftOrder.length - 1 ? 'disabled' : ''}
-                                            class="px-2 py-1 bg-blue-500 text-white rounded hover:bg-blue-600 disabled:bg-gray-300 disabled:cursor-not-allowed"
-                                        >
-                                            ▼
-                                        </button>
-                                    </div>
-                                </div>
-                            `).join('')}
-                        </div>
-                    ` : '';
 
                     html = `
                         <div class="p-4">
@@ -556,22 +429,14 @@
                                 <div class="bg-white rounded-2xl shadow-2xl p-6 mt-8">
                                     <h2 class="text-3xl font-bold text-center mb-6 text-green-700">🎯 חדר המתנה</h2>
                                     
-                                    <div class="mb-6">
-                                        <h3 class="text-xl font-bold mb-3">קבוצות:</h3>
-                                        <div class="grid grid-cols-3 gap-4">
-                                            ${gameState.teams.map(team => `
-                                                <div class="bg-gradient-to-br from-gray-50 to-gray-100 p-4 rounded-xl shadow-md border-2 border-gray-200">
-                                                    <div class="text-center font-bold text-xl mb-2">
-                                                        ${team.name === 'אדום' ? '🔴 אדומה' : team.name === 'לבן' ? '⚪ לבנה' : '⚫ שחורה'}
-                                                    </div>
-                                                    <div class="text-center text-sm text-gray-600">👑 ${team.captain}</div>
-                                                </div>
-                                            `).join('')}
-                                        </div>
+                                    <div class="mb-6 p-4 bg-blue-50 rounded-xl">
+                                        <p class="text-center text-gray-700">
+                                            <span class="font-bold">📋 יש ${gameState.players.length} שחקנים זמינים לדראפט</span>
+                                        </p>
                                     </div>
 
                                     <div class="mb-6">
-                                        <h3 class="text-xl font-bold mb-3">משתתפים (${gameState.participants.length}):</h3>
+                                        <h3 class="text-xl font-bold mb-3">משתתפים ({gameState.participants.length}):</h3>
                                         <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
                                             ${gameState.participants.map(p => `
                                                 <div class="p-3 rounded-xl font-bold transition-all ${
@@ -579,38 +444,10 @@
                                                         ? 'bg-gradient-to-br from-green-100 to-green-200 text-green-800 shadow-md' 
                                                         : 'bg-gray-100 text-gray-600'
                                                 }">
-                                                    ${p.name} ${p.ready ? '✓' : ''}
+                                                    ${p.name === gameState.host ? '👑 ' : ''}${p.name} ${p.ready ? '✓' : ''}
                                                 </div>
                                             `).join('')}
                                         </div>
-                                    </div>
-
-                                    <div class="mb-6 p-4 bg-gray-50 rounded-xl">
-                                        <h3 class="text-xl font-bold mb-3">סדר הדראפט:</h3>
-                                        <div class="flex gap-3 mb-4">
-                                            <button
-                                                onclick="setDraftOrderMode('random')"
-                                                class="flex-1 py-3 rounded-lg font-bold transition-all ${
-                                                    draftOrderMode === 'random'
-                                                        ? 'bg-purple-600 text-white shadow-lg'
-                                                        : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-                                                }"
-                                            >
-                                                🎲 אקראי
-                                            </button>
-                                            <button
-                                                onclick="setDraftOrderMode('manual')"
-                                                class="flex-1 py-3 rounded-lg font-bold transition-all ${
-                                                    draftOrderMode === 'manual'
-                                                        ? 'bg-purple-600 text-white shadow-lg'
-                                                        : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-                                                }"
-                                            >
-                                                ✋ ידני
-                                            </button>
-                                        </div>
-
-                                        ${manualOrderHtml}
                                     </div>
 
                                     <div class="space-y-3">
@@ -625,12 +462,18 @@
                                             ${myParticipant?.ready ? '✓ מוכן!' : 'סמן כמוכן'}
                                         </button>
 
-                                        <button
-                                            onclick="startDraft()"
-                                            class="w-full bg-blue-600 text-white py-4 rounded-xl font-bold text-xl hover:bg-blue-700 transition-all transform hover:scale-105 shadow-lg"
-                                        >
-                                            🎬 התחל דראפט (${readyCount} מוכנים)
-                                        </button>
+                                        ${isHost ? `
+                                            <button
+                                                onclick="moveToCapSelection()"
+                                                class="w-full bg-blue-600 text-white py-4 rounded-xl font-bold text-xl hover:bg-blue-700 transition-all transform hover:scale-105 shadow-lg"
+                                            >
+                                                👑 בחר קפטנים (${readyCount} מוכנים)
+                                            </button>
+                                        ` : `
+                                            <div class="text-center text-gray-600 py-4">
+                                                ⏳ מחכים למארח לבחור קפטנים...
+                                            </div>
+                                        `}
                                     </div>
                                 </div>
                             </div>
@@ -639,25 +482,111 @@
                 }
             }
 
+            // Captains Selection Phase
+            else if (gameState.status === 'captains') {
+                const captainsHtml = selectedCaptains.length > 0 ? `
+                    <div class="mb-6 p-4 bg-gray-50 rounded-xl">
+                        <h3 class="text-lg font-bold mb-3">קפטנים נבחרים - בחר צבע לכל קבוצה:</h3>
+                        <div class="space-y-3">
+                            ${selectedCaptains.map(captainName => {
+                                const assignedColor = captainColorMap[captainName];
+                                return `
+                                    <div class="flex items-center gap-3 bg-white p-3 rounded-lg shadow">
+                                        <span class="font-bold text-lg flex-1">👑 ${captainName}</span>
+                                        <div class="flex gap-2">
+                                            ${['אדום', 'לבן', 'שחור'].map(color => `
+                                                <button
+                                                    onclick="assignColorToCaptain('${captainName}', '${color}')"
+                                                    class="px-4 py-2 rounded-lg font-bold transition-all ${
+                                                        assignedColor === color
+                                                            ? color === 'אדום' ? 'bg-red-500 text-white scale-110' :
+                                                              color === 'לבן' ? 'bg-gray-100 text-gray-800 border-2 border-gray-400 scale-110' :
+                                                              'bg-gray-800 text-white scale-110'
+                                                            : color === 'אדום' ? 'bg-red-200 text-red-800 hover:bg-red-300' :
+                                                              color === 'לבן' ? 'bg-gray-50 text-gray-600 border border-gray-300 hover:bg-gray-100' :
+                                                              'bg-gray-300 text-gray-700 hover:bg-gray-400'
+                                                    }"
+                                                >
+                                                    ${color}
+                                                </button>
+                                            `).join('')}
+                                        </div>
+                                    </div>
+                                `;
+                            }).join('')}
+                        </div>
+                    </div>
+                ` : '';
+
+                html = `
+                    <div class="p-4">
+                        <div class="max-w-4xl mx-auto">
+                            <div class="bg-white rounded-2xl shadow-2xl p-6 mt-8">
+                                <h2 class="text-3xl font-bold text-center mb-6 text-green-700">👑 בחר 3 קפטנים</h2>
+                                <p class="text-center text-gray-600 mb-6">הקפטנים יבחרו שחקנים לקבוצות שלהם</p>
+                                
+                                ${isHost ? `
+                                    <div class="flex gap-4 mb-6">
+                                        <button
+                                            onclick="confirmCaptains()"
+                                            ${selectedCaptains.length !== 3 ? 'disabled' : ''}
+                                            class="w-full bg-green-600 text-white py-3 rounded-xl font-bold hover:bg-green-700 disabled:bg-gray-400 transition-all transform hover:scale-105 shadow-lg text-xl"
+                                        >
+                                            ✓ אישור והתחל דראפט (${selectedCaptains.length}/3)
+                                        </button>
+                                    </div>
+
+                                    ${captainsHtml}
+
+                                    <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
+                                        ${gameState.participants.map(participant => `
+                                            <button
+                                                onclick="toggleCaptain('${participant.name}')"
+                                                class="p-4 rounded-xl font-bold text-lg transition-all transform hover:scale-105 shadow-md ${
+                                                    selectedCaptains.includes(participant.name)
+                                                        ? 'bg-gradient-to-br from-green-500 to-green-600 text-white shadow-xl scale-105'
+                                                        : 'bg-gray-100 text-gray-800 hover:bg-gray-200'
+                                                }"
+                                            >
+                                                ${selectedCaptains.includes(participant.name) ? '👑 ' : ''}
+                                                ${participant.name}
+                                            </button>
+                                        `).join('')}
+                                    </div>
+                                ` : `
+                                    <div class="text-center text-gray-600 py-8">
+                                        <p class="text-xl mb-4">⏳ המארח בוחר את הקפטנים...</p>
+                                        <div class="space-y-2">
+                                            ${gameState.participants.map(p => `
+                                                <div class="bg-gray-100 p-3 rounded-lg font-bold">${p.name}</div>
+                                            `).join('')}
+                                        </div>
+                                    </div>
+                                `}
+                                
+                                <button
+                                    onclick="fullReset()"
+                                    class="mt-6 w-full bg-red-500 text-white py-2 rounded-lg font-bold hover:bg-red-600 text-sm"
+                                >
+                                    🔄 התחל מחדש
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
             // Drafting Phase
             else if (gameState.status === 'drafting') {
                 const currentPicker = gameState.turn.order[gameState.turn.index];
                 const isMyTurn = currentPicker === nickname;
                 const availablePlayers = gameState.players.filter(p => p.available);
-                const totalPicks = gameState.players.length - gameState.teams.length;
+                const totalPicks = gameState.players.length;
                 const progress = (gameState.picks.length / totalPicks) * 100;
                 const pendingPlayer = pendingPick ? gameState.players.find(p => p.id === pendingPick) : null;
 
                 // Current team
-                const pickCount = gameState.picks.length;
-                const round = Math.floor(pickCount / gameState.teams.length);
-                let teamIndex;
-                if (round % 2 === 0) {
-                    teamIndex = pickCount % gameState.teams.length;
-                } else {
-                    teamIndex = gameState.teams.length - 1 - (pickCount % gameState.teams.length);
-                }
-                const currentTeam = gameState.teams[teamIndex];
+                const currentTeam = gameState.teams.find(t => t.captain === currentPicker);
 
                 const confirmButtons = isMyTurn && pendingPick ? `
                     <div class="flex gap-4 mb-6">
@@ -693,12 +622,14 @@
                                         `}
                                     </div>
                                     
-                                    <div class="text-lg mb-3 text-gray-700">
-                                        הבחירה הבאה לקבוצה: 
-                                        <span class="font-bold">
-                                            ${currentTeam.name === 'אדום' ? '🔴 קבוצה אדומה' : currentTeam.name === 'לבן' ? '⚪ קבוצה לבנה' : '⚫ קבוצה שחורה'}
-                                        </span>
-                                    </div>
+                                    ${currentTeam ? `
+                                        <div class="text-lg mb-3 text-gray-700">
+                                            בוחר עבור: 
+                                            <span class="font-bold">
+                                                ${currentTeam.name === 'אדום' ? '🔴 קבוצה אדומה' : currentTeam.name === 'לבן' ? '⚪ קבוצה לבנה' : '⚫ קבוצה שחורה'}
+                                            </span>
+                                        </div>
+                                    ` : ''}
                                     
                                     <div class="w-full bg-gray-200 rounded-full h-4 mb-2">
                                         <div class="bg-green-600 h-4 rounded-full transition-all duration-500" style="width: ${progress}%"></div>
@@ -736,13 +667,15 @@
                                         <h3 class="text-xl font-bold mb-3">קבוצות:</h3>
                                         <div class="space-y-3">
                                             ${gameState.teams.map(team => `
-                                                <div class="bg-gradient-to-br from-gray-50 to-gray-100 p-4 rounded-xl shadow-md border-2 border-gray-200">
+                                                <div class="bg-gradient-to-br from-gray-50 to-gray-100 p-4 rounded-xl shadow-md border-2 ${
+                                                    team.captain === currentPicker ? 'border-green-500 border-4' : 'border-gray-200'
+                                                }">
                                                     <div class="font-bold text-lg mb-2">
                                                         ${team.name === 'אדום' ? '🔴 קבוצה אדומה' : team.name === 'לבן' ? '⚪ קבוצה לבנה' : '⚫ קבוצה שחורה'}
                                                         - 👑 ${team.captain}
                                                     </div>
                                                     <div class="text-sm text-gray-600">
-                                                        (${team.players.length}) ${team.players.join(', ')}
+                                                        ${team.players.length > 0 ? `(${team.players.length}) ${team.players.join(', ')}` : 'עדיין ללא שחקנים'}
                                                     </div>
                                                 </div>
                                             `).join('')}
@@ -796,7 +729,7 @@
                                             </div>
                                             <div>
                                                 <span class="font-bold">👥 שחקנים (${team.players.length}):</span>
-                                                <div class="mt-2 text-lg leading-relaxed">${team.players.join(', ')}</div>
+                                                <div class="mt-2 text-lg leading-relaxed">${team.players.length > 0 ? team.players.join(', ') : 'אין שחקנים'}</div>
                                             </div>
                                         </div>
                                     `).join('')}
@@ -810,19 +743,21 @@
                                         📤 שתף בוואטסאפ
                                     </button>
                                     
-                                    <button
-                                        onclick="resetDraft()"
-                                        class="w-full bg-yellow-500 text-white py-4 rounded-xl font-bold text-lg hover:bg-yellow-600 transition-all shadow-lg"
-                                    >
-                                        🔄 אפס דראפט (שמור שחקנים)
-                                    </button>
-                                    
-                                    <button
-                                        onclick="fullReset()"
-                                        class="w-full bg-red-500 text-white py-4 rounded-xl font-bold text-lg hover:bg-red-600 transition-all shadow-lg"
-                                    >
-                                        🗑️ התחל מחדש לגמרי
-                                    </button>
+                                    ${isHost ? `
+                                        <button
+                                            onclick="resetDraft()"
+                                            class="w-full bg-yellow-500 text-white py-4 rounded-xl font-bold text-lg hover:bg-yellow-600 transition-all shadow-lg"
+                                        >
+                                            🔄 אפס דראפט (שמור שחקנים)
+                                        </button>
+                                        
+                                        <button
+                                            onclick="fullReset()"
+                                            class="w-full bg-red-500 text-white py-4 rounded-xl font-bold text-lg hover:bg-red-600 transition-all shadow-lg"
+                                        >
+                                            🗑️ התחל מחדש לגמרי
+                                        </button>
+                                    ` : ''}
                                 </div>
                             </div>
                         </div>
@@ -841,10 +776,6 @@
             }
         };
 
-        window.toggleCaptain = toggleCaptain;
-        window.assignColorToCaptain = assignColorToCaptain;
-        window.confirmCaptains = confirmCaptains;
-        
         window.handleJoinLobby = function() {
             const nick = document.getElementById('nicknameInput').value;
             if (nick.trim()) {
@@ -853,23 +784,16 @@
         };
         
         window.toggleReady = toggleReady;
-        window.startDraft = startDraft;
+        window.moveToCapSelection = moveToCapSelection;
+        window.toggleCaptain = toggleCaptain;
+        window.assignColorToCaptain = assignColorToCaptain;
+        window.confirmCaptains = confirmCaptains;
         window.selectPlayer = selectPlayer;
         window.cancelPick = cancelPick;
         window.confirmPick = confirmPick;
         window.resetDraft = resetDraft;
         window.fullReset = fullReset;
         window.shareWhatsApp = shareWhatsApp;
-        window.moveParticipantUp = moveParticipantUp;
-        window.moveParticipantDown = moveParticipantDown;
-        
-        window.setDraftOrderMode = function(mode) {
-            draftOrderMode = mode;
-            if (mode === 'manual' && gameState.participants) {
-                manualDraftOrder = gameState.participants.map(p => p.name);
-            }
-            render();
-        };
 
         // Initialize
         initGame();
