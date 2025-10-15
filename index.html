@@ -192,10 +192,15 @@
       localStorage.setItem('draft21_nickname', state.nickname);
       localStorage.setItem('draft21_id', participantId);
 
+      const matchingTeam = gameState.teams.find(t => 
+        t.captain.toLowerCase() === state.nickname.trim().toLowerCase()
+      );
+
       const participant = {
         id: participantId,
         name: state.nickname,
-        ready: false
+        ready: false,
+        teamName: matchingTeam ? matchingTeam.name : null
       };
 
       const exists = gameState.participants.some(p => p.id === participantId);
@@ -205,9 +210,19 @@
       }
     }
 
-    function toggleReady() {
+    function selectTeam(teamName) {
       gameState.participants = gameState.participants.map(p =>
-        p.id === state.myId ? { id: p.id, name: p.name, ready: !p.ready } : p
+        p.id === state.myId ? { id: p.id, name: p.name, ready: p.ready, teamName: teamName } : p
+      );
+      notifyListeners();
+    }
+
+    function toggleReady() {
+      const myParticipant = gameState.participants.find(p => p.id === state.myId);
+      if (!myParticipant || !myParticipant.teamName) return;
+      
+      gameState.participants = gameState.participants.map(p =>
+        p.id === state.myId ? { id: p.id, name: p.name, ready: !p.ready, teamName: p.teamName } : p
       );
       notifyListeners();
     }
@@ -215,6 +230,12 @@
     function startDraft() {
       const participants = gameState.participants.filter(p => p.ready);
       if (participants.length === 0) return;
+
+      const teamsRepresented = new Set(participants.map(p => p.teamName));
+      if (teamsRepresented.size !== gameState.teams.length) {
+        alert('כל קבוצה צריכה משתתף מוכן לפחות!');
+        return;
+      }
 
       const availableCount = gameState.players.filter(p => p.available).length;
       const teamsCount = gameState.teams.length;
@@ -281,11 +302,9 @@
       const currentTeamName = gameState.turn.order[gameState.turn.index];
       const currentTeam = gameState.teams.find(t => t.name === currentTeamName);
       
-      const myCaptainTeam = gameState.teams.find(t => 
-        gameState.participants.find(p => p.id === state.myId && p.name === t.captain)
-      );
+      const myParticipant = gameState.participants.find(p => p.id === state.myId);
       
-      if (!myCaptainTeam || myCaptainTeam.name !== currentTeamName) return;
+      if (!myParticipant || myParticipant.teamName !== currentTeamName) return;
 
       const player = gameState.players.find(p => p.id === playerId);
       if (!player || !player.available) return;
@@ -439,11 +458,8 @@
       const currentTeamName = gameState.turn.order[gameState.turn.index];
       const team = gameState.teams.find(t => t.name === currentTeamName);
       
-      const myCaptainTeam = gameState.teams.find(t => 
-        gameState.participants.find(p => p.id === state.myId && p.name === t.captain)
-      );
-      
-      const isMyTurn = myCaptainTeam && myCaptainTeam.name === currentTeamName;
+      const myParticipant = gameState.participants.find(p => p.id === state.myId);
+      const isMyTurn = myParticipant && myParticipant.teamName === currentTeamName;
       
       return { 
         team: team,
@@ -577,18 +593,49 @@
 
       html += '<div class="space-y-3 mb-6">';
       gameState.participants.forEach(p => {
+        const team = p.teamName ? gameState.teams.find(t => t.name === p.teamName) : null;
         html += '<div class="flex items-center justify-between p-4 rounded-xl ' +
           (p.ready ? 'bg-green-100 border-2 border-green-500' : 'bg-gray-100 border-2 border-gray-300') + '">' +
-          '<span class="font-medium">' + p.name + '</span>' +
+          '<div class="flex items-center gap-3">' +
+            (team ? '<div class="w-8 h-8 rounded-full ' + TEAM_COLORS[team.name].bg + '"></div>' : '') +
+            '<div>' +
+              '<span class="font-medium block">' + p.name + '</span>' +
+              (team ? '<span class="text-xs text-gray-600">קבוצה: ' + team.name + '</span>' : '<span class="text-xs text-red-600">לא בחר קבוצה</span>') +
+            '</div>' +
+          '</div>' +
           (p.ready ? '<span class="text-2xl">✓</span>' : '') +
         '</div>';
       });
       html += '</div>';
 
       if (myParticipant) {
-        html += '<button onclick="handleToggleReady()" class="w-full py-4 rounded-xl font-bold mb-4 transition-all ' +
-          (myParticipant.ready ? 'bg-gray-300 text-gray-700' : 'bg-green-500 text-white hover:bg-green-600') + '">' +
-          (myParticipant.ready ? 'ביטול מוכן' : 'אני מוכן!') +
+        if (!myParticipant.teamName) {
+          html += '<div class="mb-4 p-4 bg-yellow-50 border-2 border-yellow-300 rounded-xl">' +
+            '<p class="font-bold text-yellow-800 mb-3 text-center">בחר את הקבוצה שלך:</p>' +
+            '<div class="grid grid-cols-3 gap-3">';
+          
+          gameState.teams.forEach(team => {
+            const isAlreadyTaken = gameState.participants.some(p => p.teamName === team.name && p.id !== state.myId);
+            html += '<button onclick="handleSelectTeam(\'' + team.name + '\')" ' +
+              (isAlreadyTaken ? 'disabled' : '') +
+              ' class="p-4 rounded-xl transition-all ' +
+              (isAlreadyTaken ? 'bg-gray-200 opacity-50 cursor-not-allowed' : 'bg-white border-2 border-gray-300 hover:border-blue-500 hover:scale-105') + '">' +
+              '<div class="w-12 h-12 rounded-full ' + TEAM_COLORS[team.name].bg + ' mx-auto mb-2"></div>' +
+              '<p class="font-bold text-sm">' + team.name + '</p>' +
+              '<p class="text-xs text-gray-600">' + team.captain + '</p>' +
+              (isAlreadyTaken ? '<p class="text-xs text-red-600 mt-1">תפוס</p>' : '') +
+            '</button>';
+          });
+          
+          html += '</div></div>';
+        }
+
+        html += '<button onclick="handleToggleReady()" ' +
+          (!myParticipant.teamName ? 'disabled' : '') +
+          ' class="w-full py-4 rounded-xl font-bold mb-4 transition-all ' +
+          (!myParticipant.teamName ? 'bg-gray-200 text-gray-400 cursor-not-allowed' : 
+           myParticipant.ready ? 'bg-gray-300 text-gray-700' : 'bg-green-500 text-white hover:bg-green-600') + '">' +
+          (myParticipant.ready ? 'ביטול מוכן' : myParticipant.teamName ? 'אני מוכן!' : 'בחר קבוצה קודם') +
         '</button>';
       }
 
@@ -834,6 +881,10 @@
 
     window.handleCancelPendingPick = function() {
       cancelPendingPick();
+    };
+
+    window.handleSelectTeam = function(teamName) {
+      selectTeam(teamName);
     };
 
     init();
