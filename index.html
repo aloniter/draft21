@@ -56,7 +56,9 @@
       isHost: false,
       selectedCaptains: [],
       teamAssignments: {},
-      listeners: []
+      listeners: [],
+      draftOrder: [],
+      manualOrder: false
     };
 
     const TEAM_COLORS = {
@@ -92,7 +94,13 @@
     function cleanPlayerNames(text) {
       return text
         .split('\n')
-        .map(line => line.replace(/^\d+\.\s*/, '').trim())
+        .map(line => {
+          let cleaned = line.trim();
+          cleaned = cleaned.replace(/^\d+[\.\)\-\s]+/, '');
+          cleaned = cleaned.replace(/[\d\.\)\-]+$/, '');
+          cleaned = cleaned.replace(/\d+/g, '');
+          return cleaned.trim();
+        })
         .filter(name => name.length > 0)
         .slice(0, 21);
     }
@@ -207,20 +215,68 @@
       if (participants.length === 0) return;
 
       let order = [];
-      const availableCount = gameState.players.filter(p => p.available).length;
-      const rounds = Math.ceil(availableCount / participants.length);
       
-      for (let round = 0; round < rounds; round++) {
-        if (round % 2 === 0) {
-          order = order.concat(participants.map(p => p.id));
-        } else {
-          order = order.concat(participants.map(p => p.id).reverse());
+      if (state.manualOrder && state.draftOrder.length > 0) {
+        const orderedParticipants = state.draftOrder.map(id => 
+          participants.find(p => p.id === id)
+        ).filter(p => p);
+        
+        const availableCount = gameState.players.filter(p => p.available).length;
+        const rounds = Math.ceil(availableCount / orderedParticipants.length);
+        
+        for (let round = 0; round < rounds; round++) {
+          if (round % 2 === 0) {
+            order = order.concat(orderedParticipants.map(p => p.id));
+          } else {
+            order = order.concat(orderedParticipants.map(p => p.id).reverse());
+          }
+        }
+      } else {
+        const availableCount = gameState.players.filter(p => p.available).length;
+        const rounds = Math.ceil(availableCount / participants.length);
+        
+        for (let round = 0; round < rounds; round++) {
+          if (round % 2 === 0) {
+            order = order.concat(participants.map(p => p.id));
+          } else {
+            order = order.concat(participants.map(p => p.id).reverse());
+          }
         }
       }
 
       gameState.status = 'drafting';
       gameState.turn = { order: order, index: 0, direction: 1 };
       notifyListeners();
+    }
+
+    function toggleManualOrder() {
+      state.manualOrder = !state.manualOrder;
+      if (!state.manualOrder) {
+        state.draftOrder = [];
+      } else {
+        const participants = gameState.participants.filter(p => p.ready);
+        state.draftOrder = participants.map(p => p.id);
+      }
+      render();
+    }
+
+    function moveDraftOrder(participantId, direction) {
+      const currentIndex = state.draftOrder.indexOf(participantId);
+      if (currentIndex === -1) return;
+      
+      const newIndex = currentIndex + direction;
+      if (newIndex < 0 || newIndex >= state.draftOrder.length) return;
+      
+      const temp = state.draftOrder[currentIndex];
+      state.draftOrder[currentIndex] = state.draftOrder[newIndex];
+      state.draftOrder[newIndex] = temp;
+      
+      render();
+    }
+
+    function randomizeDraftOrder() {
+      state.draftOrder = state.draftOrder.slice().sort(() => Math.random() - 0.5);
+      render();
     }
 
     function makePick(playerId) {
@@ -379,13 +435,24 @@
 
       if (selectedCount === 3) {
         html += '<div class="space-y-4 mb-6">' +
-          '<h3 class="text-xl font-bold text-gray-800">הקצה צבעי חולצות</h3>';
+          '<h3 class="text-xl font-bold text-gray-800">הקצה צבעי חולצות לקפטנים</h3>' +
+          '<p class="text-sm text-gray-600 mb-4">לחץ על צבע עבור כל קפטן</p>';
         
         state.selectedCaptains.forEach(captainId => {
           const captain = gameState.players.find(p => p.id === captainId);
-          html += '<div class="flex items-center gap-4">' +
-            '<span class="font-medium w-32">' + captain.name + '</span>' +
-            '<div class="flex gap-2">';
+          const assignedColor = state.teamAssignments[captainId];
+          html += '<div class="flex items-center gap-4 bg-gray-50 p-4 rounded-xl">' +
+            '<span class="font-bold w-32">' + captain.name + '</span>';
+          
+          if (assignedColor) {
+            html += '<span class="text-sm text-gray-600">→</span>' +
+              '<div class="flex items-center gap-2">' +
+                '<div class="w-8 h-8 rounded-full ' + TEAM_COLORS[assignedColor].bg + '"></div>' +
+                '<span class="font-medium">' + assignedColor + '</span>' +
+              '</div>';
+          }
+          
+          html += '<div class="flex gap-2 mr-auto">';
           
           Object.keys(TEAM_COLORS).forEach(color => {
             const isAssigned = state.teamAssignments[captainId] === color;
@@ -393,8 +460,8 @@
             html += '<button onclick="handleAssignTeam(\'' + captainId + '\', \'' + color + '\')" ' +
               (isUsed ? 'disabled' : '') +
               ' class="w-16 h-16 rounded-full border-4 transition-all ' + TEAM_COLORS[color].bg + ' ' +
-              (isAssigned ? 'border-yellow-400 scale-110' : 'border-gray-300 opacity-50') + ' ' +
-              (isUsed ? 'opacity-30 cursor-not-allowed' : '') + '"></button>';
+              (isAssigned ? 'border-yellow-400 scale-110 shadow-lg' : 'border-gray-300 opacity-50') + ' ' +
+              (isUsed ? 'opacity-30 cursor-not-allowed' : 'hover:scale-105') + '" title="' + color + '"></button>';
           });
           
           html += '</div></div>';
@@ -414,6 +481,7 @@
     function renderLobby() {
       const myParticipant = gameState.participants.find(p => p.id === state.myId);
       const readyCount = gameState.participants.filter(p => p.ready).length;
+      const readyParticipants = gameState.participants.filter(p => p.ready);
 
       let html = '<div class="min-h-screen bg-gradient-to-br from-blue-500 to-indigo-600 p-4">' +
         '<div class="max-w-2xl mx-auto">' +
@@ -448,6 +516,48 @@
         '</button>';
       }
 
+      if (state.isHost && readyCount > 0) {
+        html += '<div class="border-t-2 border-gray-200 pt-6 mt-6">' +
+          '<h3 class="text-xl font-bold text-gray-800 mb-4">הגדרות דראפט</h3>' +
+          '<div class="mb-4">' +
+            '<button onclick="handleToggleManualOrder()" class="w-full py-3 rounded-xl font-medium transition-all ' +
+              (state.manualOrder ? 'bg-purple-500 text-white' : 'bg-gray-200 text-gray-700') + '">' +
+              (state.manualOrder ? '✓ סדר ידני פעיל' : 'סדר אקראי (לחץ לסדר ידני)') +
+            '</button>' +
+          '</div>';
+
+        if (state.manualOrder && state.draftOrder.length > 0) {
+          html += '<div class="bg-gray-50 rounded-xl p-4 mb-4">' +
+            '<div class="flex items-center justify-between mb-3">' +
+              '<h4 class="font-bold text-gray-700">סדר הבחירה:</h4>' +
+              '<button onclick="handleRandomizeDraftOrder()" class="text-sm bg-purple-100 text-purple-700 px-3 py-1 rounded-lg hover:bg-purple-200">🔀 ערבב</button>' +
+            '</div>' +
+            '<div class="space-y-2">';
+
+          state.draftOrder.forEach((participantId, index) => {
+            const participant = readyParticipants.find(p => p.id === participantId);
+            if (participant) {
+              html += '<div class="flex items-center gap-2 bg-white p-3 rounded-lg">' +
+                '<span class="font-bold text-lg text-gray-500 w-8">' + (index + 1) + '.</span>' +
+                '<span class="flex-1 font-medium">' + participant.name + '</span>' +
+                '<div class="flex gap-1">' +
+                  '<button onclick="handleMoveDraftOrder(\'' + participantId + '\', -1)" ' +
+                    (index === 0 ? 'disabled' : '') +
+                    ' class="w-8 h-8 bg-gray-200 rounded hover:bg-gray-300 disabled:opacity-30 disabled:cursor-not-allowed">↑</button>' +
+                  '<button onclick="handleMoveDraftOrder(\'' + participantId + '\', 1)" ' +
+                    (index === state.draftOrder.length - 1 ? 'disabled' : '') +
+                    ' class="w-8 h-8 bg-gray-200 rounded hover:bg-gray-300 disabled:opacity-30 disabled:cursor-not-allowed">↓</button>' +
+                '</div>' +
+              '</div>';
+            }
+          });
+
+          html += '</div></div>';
+        }
+
+        html += '</div>';
+      }
+
       if (state.isHost) {
         html += '<button onclick="handleStartDraft()" ' +
           (readyCount === 0 ? 'disabled' : '') +
@@ -468,10 +578,10 @@
         html += '<div class="mb-6 p-6 rounded-3xl shadow-xl ' +
           (turnInfo.isMyTurn ? 'bg-yellow-400 animate-pulse' : 'bg-white') + '">' +
           '<div class="text-center">' +
-            '<p class="text-lg font-medium mb-2">' +
-              (turnInfo.isMyTurn ? '🔥 התור שלך!' : 'התור של ' + turnInfo.participant.name) +
+            '<p class="text-2xl font-bold mb-2">' +
+              (turnInfo.isMyTurn ? '🔥 התור שלך לבחור! 🔥' : '⏳ התור של: ' + turnInfo.participant.name) +
             '</p>' +
-            '<p class="text-sm text-gray-700">בוחר עבור קבוצה: ' + turnInfo.team.name + '</p>' +
+            '<p class="text-lg text-gray-700 font-medium">בוחר עבור קבוצה: <span class="font-bold">' + turnInfo.team.name + '</span></p>' +
           '</div>' +
         '</div>';
       }
@@ -597,6 +707,18 @@
 
     window.handleShareWhatsApp = function() {
       shareOnWhatsApp();
+    };
+
+    window.handleToggleManualOrder = function() {
+      toggleManualOrder();
+    };
+
+    window.handleMoveDraftOrder = function(participantId, direction) {
+      moveDraftOrder(participantId, direction);
+    };
+
+    window.handleRandomizeDraftOrder = function() {
+      randomizeDraftOrder();
     };
 
     init();
