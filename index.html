@@ -45,7 +45,9 @@
       participants: [],
       picks: [],
       turn: { order: [], index: 0, direction: 1 },
-      settings: { snake: true, randomOrder: false }
+      settings: { snake: true, randomOrder: false },
+      pendingPick: null,
+      lastPick: null
     };
 
     let state = {
@@ -214,38 +216,35 @@
       const participants = gameState.participants.filter(p => p.ready);
       if (participants.length === 0) return;
 
-      let order = [];
+      const availableCount = gameState.players.filter(p => p.available).length;
+      const teamsCount = gameState.teams.length;
+      const rounds = Math.ceil(availableCount / teamsCount);
       
-      if (state.manualOrder && state.draftOrder.length > 0) {
-        const orderedParticipants = state.draftOrder.map(id => 
-          participants.find(p => p.id === id)
-        ).filter(p => p);
-        
-        const availableCount = gameState.players.filter(p => p.available).length;
-        const rounds = Math.ceil(availableCount / orderedParticipants.length);
-        
+      let order = [];
+      const teamNames = gameState.teams.map(t => t.name);
+      
+      if (state.manualOrder && state.draftOrder.length === teamsCount) {
         for (let round = 0; round < rounds; round++) {
           if (round % 2 === 0) {
-            order = order.concat(orderedParticipants.map(p => p.id));
+            order = order.concat(state.draftOrder);
           } else {
-            order = order.concat(orderedParticipants.map(p => p.id).reverse());
+            order = order.concat(state.draftOrder.slice().reverse());
           }
         }
       } else {
-        const availableCount = gameState.players.filter(p => p.available).length;
-        const rounds = Math.ceil(availableCount / participants.length);
-        
         for (let round = 0; round < rounds; round++) {
           if (round % 2 === 0) {
-            order = order.concat(participants.map(p => p.id));
+            order = order.concat(teamNames);
           } else {
-            order = order.concat(participants.map(p => p.id).reverse());
+            order = order.concat(teamNames.slice().reverse());
           }
         }
       }
 
       gameState.status = 'drafting';
       gameState.turn = { order: order, index: 0, direction: 1 };
+      gameState.pendingPick = null;
+      gameState.lastPick = null;
       notifyListeners();
     }
 
@@ -254,14 +253,13 @@
       if (!state.manualOrder) {
         state.draftOrder = [];
       } else {
-        const participants = gameState.participants.filter(p => p.ready);
-        state.draftOrder = participants.map(p => p.id);
+        state.draftOrder = gameState.teams.map(t => t.name);
       }
       render();
     }
 
-    function moveDraftOrder(participantId, direction) {
-      const currentIndex = state.draftOrder.indexOf(participantId);
+    function moveDraftOrder(teamName, direction) {
+      const currentIndex = state.draftOrder.indexOf(teamName);
       if (currentIndex === -1) return;
       
       const newIndex = currentIndex + direction;
@@ -280,18 +278,36 @@
     }
 
     function makePick(playerId) {
-      const currentTurn = gameState.turn.order[gameState.turn.index];
-      if (currentTurn !== state.myId) return;
+      const currentTeamName = gameState.turn.order[gameState.turn.index];
+      const currentTeam = gameState.teams.find(t => t.name === currentTeamName);
+      
+      const myCaptainTeam = gameState.teams.find(t => 
+        gameState.participants.find(p => p.id === state.myId && p.name === t.captain)
+      );
+      
+      if (!myCaptainTeam || myCaptainTeam.name !== currentTeamName) return;
 
       const player = gameState.players.find(p => p.id === playerId);
       if (!player || !player.available) return;
 
-      const participant = gameState.participants.find(p => p.id === state.myId);
-      const teamIndex = gameState.turn.index % 3;
-      const team = gameState.teams[teamIndex];
+      gameState.pendingPick = {
+        playerId: playerId,
+        playerName: player.name,
+        teamName: currentTeamName
+      };
+
+      notifyListeners();
+    }
+
+    function confirmPick() {
+      if (!gameState.pendingPick) return;
+
+      const player = gameState.players.find(p => p.id === gameState.pendingPick.playerId);
+      const currentTeamName = gameState.pendingPick.teamName;
+      const team = gameState.teams.find(t => t.name === currentTeamName);
 
       gameState.players = gameState.players.map(p =>
-        p.id === playerId ? { id: p.id, name: p.name, available: false } : p
+        p.id === gameState.pendingPick.playerId ? { id: p.id, name: p.name, available: false } : p
       );
 
       gameState.teams = gameState.teams.map(t =>
@@ -299,15 +315,22 @@
       );
 
       const pick = {
-        playerId: playerId,
+        playerId: gameState.pendingPick.playerId,
         playerName: player.name,
         team: team.name,
-        participant: participant.name,
         pickNumber: gameState.picks.length + 1,
         timestamp: Date.now()
       };
+      
+      gameState.lastPick = {
+        playerId: pick.playerId,
+        playerName: pick.playerName,
+        teamName: pick.team,
+        turnIndex: gameState.turn.index
+      };
+      
       gameState.picks.push(pick);
-
+      gameState.pendingPick = null;
       gameState.turn.index++;
 
       const allPicked = gameState.players.filter(p => p.available).length === 0;
@@ -319,10 +342,55 @@
       showConfetti();
     }
 
+    function undoPick() {
+      if (!gameState.lastPick || gameState.picks.length === 0) return;
+
+      const lastPick = gameState.lastPick;
+      
+      gameState.players = gameState.players.map(p =>
+        p.id === lastPick.playerId ? { id: p.id, name: p.name, available: true } : p
+      );
+
+      gameState.teams = gameState.teams.map(t => {
+        if (t.name === lastPick.teamName) {
+          return {
+            name: t.name,
+            captain: t.captain,
+            captainId: t.captainId,
+            players: t.players.filter(p => p !== lastPick.playerName)
+          };
+        }
+        return t;
+      });
+
+      gameState.picks.pop();
+      gameState.turn.index = lastPick.turnIndex;
+      gameState.pendingPick = null;
+      gameState.lastPick = gameState.picks.length > 0 ? {
+        playerId: gameState.picks[gameState.picks.length - 1].playerId,
+        playerName: gameState.picks[gameState.picks.length - 1].playerName,
+        teamName: gameState.picks[gameState.picks.length - 1].team,
+        turnIndex: gameState.turn.index - 1
+      } : null;
+
+      if (gameState.status === 'completed') {
+        gameState.status = 'drafting';
+      }
+
+      notifyListeners();
+    }
+
+    function cancelPendingPick() {
+      gameState.pendingPick = null;
+      notifyListeners();
+    }
+
     function resetDraft() {
       gameState.picks = [];
       gameState.turn = { order: gameState.turn.order, index: 0, direction: 1 };
       gameState.status = 'drafting';
+      gameState.pendingPick = null;
+      gameState.lastPick = null;
       gameState.players = gameState.players.map(p => ({
         id: p.id,
         name: p.name,
@@ -368,11 +436,20 @@
 
     function getCurrentTurnInfo() {
       if (!gameState || state.phase !== 'drafting') return null;
-      const currentParticipantId = gameState.turn.order[gameState.turn.index];
-      const participant = gameState.participants.find(p => p.id === currentParticipantId);
-      const teamIndex = gameState.turn.index % 3;
-      const team = gameState.teams[teamIndex];
-      return { participant: participant, team: team, isMyTurn: currentParticipantId === state.myId };
+      const currentTeamName = gameState.turn.order[gameState.turn.index];
+      const team = gameState.teams.find(t => t.name === currentTeamName);
+      
+      const myCaptainTeam = gameState.teams.find(t => 
+        gameState.participants.find(p => p.id === state.myId && p.name === t.captain)
+      );
+      
+      const isMyTurn = myCaptainTeam && myCaptainTeam.name === currentTeamName;
+      
+      return { 
+        team: team,
+        captain: team.captain,
+        isMyTurn: isMyTurn
+      };
     }
 
     function render() {
@@ -481,7 +558,6 @@
     function renderLobby() {
       const myParticipant = gameState.participants.find(p => p.id === state.myId);
       const readyCount = gameState.participants.filter(p => p.ready).length;
-      const readyParticipants = gameState.participants.filter(p => p.ready);
 
       let html = '<div class="min-h-screen bg-gradient-to-br from-blue-500 to-indigo-600 p-4">' +
         '<div class="max-w-2xl mx-auto">' +
@@ -529,22 +605,27 @@
         if (state.manualOrder && state.draftOrder.length > 0) {
           html += '<div class="bg-gray-50 rounded-xl p-4 mb-4">' +
             '<div class="flex items-center justify-between mb-3">' +
-              '<h4 class="font-bold text-gray-700">סדר הבחירה:</h4>' +
+              '<h4 class="font-bold text-gray-700">סדר הקבוצות:</h4>' +
               '<button onclick="handleRandomizeDraftOrder()" class="text-sm bg-purple-100 text-purple-700 px-3 py-1 rounded-lg hover:bg-purple-200">🔀 ערבב</button>' +
             '</div>' +
+            '<p class="text-xs text-gray-500 mb-3">הסדר יהפוך כל סיבוב (snake draft)</p>' +
             '<div class="space-y-2">';
 
-          state.draftOrder.forEach((participantId, index) => {
-            const participant = readyParticipants.find(p => p.id === participantId);
-            if (participant) {
+          state.draftOrder.forEach((teamName, index) => {
+            const team = gameState.teams.find(t => t.name === teamName);
+            if (team) {
               html += '<div class="flex items-center gap-2 bg-white p-3 rounded-lg">' +
                 '<span class="font-bold text-lg text-gray-500 w-8">' + (index + 1) + '.</span>' +
-                '<span class="flex-1 font-medium">' + participant.name + '</span>' +
+                '<div class="w-8 h-8 rounded-full ' + TEAM_COLORS[teamName].bg + '"></div>' +
+                '<div class="flex-1">' +
+                  '<span class="font-bold">' + teamName + '</span>' +
+                  '<span class="text-sm text-gray-500 mr-2">(' + team.captain + ')</span>' +
+                '</div>' +
                 '<div class="flex gap-1">' +
-                  '<button onclick="handleMoveDraftOrder(\'' + participantId + '\', -1)" ' +
+                  '<button onclick="handleMoveDraftOrder(\'' + teamName + '\', -1)" ' +
                     (index === 0 ? 'disabled' : '') +
                     ' class="w-8 h-8 bg-gray-200 rounded hover:bg-gray-300 disabled:opacity-30 disabled:cursor-not-allowed">↑</button>' +
-                  '<button onclick="handleMoveDraftOrder(\'' + participantId + '\', 1)" ' +
+                  '<button onclick="handleMoveDraftOrder(\'' + teamName + '\', 1)" ' +
                     (index === state.draftOrder.length - 1 ? 'disabled' : '') +
                     ' class="w-8 h-8 bg-gray-200 rounded hover:bg-gray-300 disabled:opacity-30 disabled:cursor-not-allowed">↓</button>' +
                 '</div>' +
@@ -579,23 +660,45 @@
           (turnInfo.isMyTurn ? 'bg-yellow-400 animate-pulse' : 'bg-white') + '">' +
           '<div class="text-center">' +
             '<p class="text-2xl font-bold mb-2">' +
-              (turnInfo.isMyTurn ? '🔥 התור שלך לבחור! 🔥' : '⏳ התור של: ' + turnInfo.participant.name) +
+              (turnInfo.isMyTurn ? '🔥 התור שלך לבחור! 🔥' : '⏳ התור של: ' + turnInfo.captain) +
             '</p>' +
-            '<p class="text-lg text-gray-700 font-medium">בוחר עבור קבוצה: <span class="font-bold">' + turnInfo.team.name + '</span></p>' +
+            '<p class="text-lg text-gray-700 font-medium">קבוצה: <span class="font-bold">' + turnInfo.team.name + '</span></p>' +
+          '</div>' +
+        '</div>';
+      }
+
+      if (gameState.pendingPick) {
+        html += '<div class="mb-6 p-6 rounded-2xl bg-orange-100 border-4 border-orange-400 shadow-xl">' +
+          '<div class="text-center">' +
+            '<p class="text-lg font-bold text-orange-800 mb-3">✓ נבחר: ' + gameState.pendingPick.playerName + '</p>' +
+            '<div class="flex gap-3 justify-center">' +
+              '<button onclick="handleConfirmPick()" class="bg-green-500 text-white px-8 py-3 rounded-xl font-bold hover:bg-green-600 transition-all">✓ סיימתי - עבור לתור הבא</button>' +
+              '<button onclick="handleCancelPendingPick()" class="bg-gray-400 text-white px-6 py-3 rounded-xl font-bold hover:bg-gray-500 transition-all">✗ בטל בחירה</button>' +
+            '</div>' +
           '</div>' +
         '</div>';
       }
 
       html += '<div class="bg-white rounded-3xl shadow-2xl p-6 mb-6">' +
-        '<h3 class="text-2xl font-bold text-gray-800 mb-4">שחקנים זמינים</h3>' +
+        '<div class="flex items-center justify-between mb-4">' +
+          '<h3 class="text-2xl font-bold text-gray-800">שחקנים זמינים</h3>';
+      
+      if (state.isHost && gameState.lastPick) {
+        html += '<button onclick="handleUndoPick()" class="bg-red-100 text-red-700 px-4 py-2 rounded-lg font-bold hover:bg-red-200 transition-all">↶ אחורה</button>';
+      }
+      
+      html += '</div>' +
         '<div class="grid grid-cols-2 md:grid-cols-4 gap-3">';
 
       gameState.players.filter(p => p.available).forEach(player => {
-        const canPick = turnInfo && turnInfo.isMyTurn;
+        const canPick = turnInfo && turnInfo.isMyTurn && !gameState.pendingPick;
+        const isPending = gameState.pendingPick && gameState.pendingPick.playerId === player.id;
         html += '<button onclick="handleMakePick(\'' + player.id + '\')" ' +
           (!canPick ? 'disabled' : '') +
           ' class="p-4 rounded-xl border-2 transition-all ' +
-          (canPick ? 'bg-gradient-to-br from-blue-400 to-purple-500 text-white border-purple-600 hover:scale-105 cursor-pointer' : 'bg-gray-100 text-gray-500 border-gray-300 cursor-not-allowed') +
+          (isPending ? 'bg-orange-400 text-white border-orange-600 scale-105 animate-pulse' : 
+           canPick ? 'bg-gradient-to-br from-blue-400 to-purple-500 text-white border-purple-600 hover:scale-105 cursor-pointer' : 
+           'bg-gray-100 text-gray-500 border-gray-300 cursor-not-allowed') +
           '">' + player.name + '</button>';
       });
 
@@ -719,6 +822,18 @@
 
     window.handleRandomizeDraftOrder = function() {
       randomizeDraftOrder();
+    };
+
+    window.handleConfirmPick = function() {
+      confirmPick();
+    };
+
+    window.handleUndoPick = function() {
+      undoPick();
+    };
+
+    window.handleCancelPendingPick = function() {
+      cancelPendingPick();
     };
 
     init();
