@@ -287,24 +287,22 @@
   const snap = await getDoc(doc(db,'games','current'));
   if (!snap.exists()) return;
   const gd = snap.data();
-  let msg = '⚽ תוצאות הדראפט:\n\n';
+  let msg = '⚽🏆 תוצאות הדראפט 🏆⚽\n\n';
   
   gd.teams.forEach(t => {
-    // בחר אמוג'י לפי צבע
-    const emoji = t.name==='Red'?'🔴':t.name==='White'?'⚪':'⚫';
+    const emoji = t.name==='Red'?'🟥':t.name==='White'?'⬜':'⬛';
     
-    // הפרד את הקפטן משאר השחקנים
     const captain = t.captain;
     const otherPlayers = t.players.filter(p => p !== captain);
-    
-    // ערבב את שאר השחקנים באקראי
     const shuffled = otherPlayers.sort(() => Math.random() - 0.5);
     
-    // בנה את ההודעה
-    msg += emoji + ' קבוצה ' + t.name + ' ' + emoji + '\n';
+    msg += emoji + emoji + emoji + ' קבוצה ' + t.name + ' ' + emoji + emoji + emoji + '\n';
     msg += '👑 קפטן: ' + captain + '\n';
     msg += '👥 שחקנים: ' + shuffled.join(', ') + '\n\n';
   });
+  
+  msg += '━━━━━━━━━━━━━━\n';
+  msg += '⚽ בהצלחה לכולם! ⚽';
   
   window.open('https://wa.me/?text='+encodeURIComponent(msg), '_blank');
 }
