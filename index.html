@@ -1,893 +1,584 @@
-<!DOCTYPE html>
-<html lang="he" dir="rtl">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Draft21 - כלי דראפט כדורגל</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <style>
-    .animate-bounce {
-      animation: bounce 1s infinite;
-    }
-    @keyframes bounce {
-      0%, 100% { transform: translateY(0); }
-      50% { transform: translateY(-20px); }
-    }
-    
-    .animate-pulse {
-      animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-    }
-    @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.5; }
-    }
-    
-    .confetti {
-      position: fixed;
-      animation: fall 3s linear;
-      pointer-events: none;
-      font-size: 24px;
-      z-index: 9999;
-    }
-    @keyframes fall {
-      to { transform: translateY(100vh) rotate(360deg); opacity: 0; }
-    }
-  </style>
-</head>
-<body class="min-h-screen">
-  <div id="app"></div>
+const firebaseConfig = {
+  apiKey: "AIzaSyCjwQYPhwTvNFNOEMlwtsmIc36PFpNF62c",
+  authDomain: "draft21-418bb.firebaseapp.com",
+  projectId: "draft21-418bb",
+  storageBucket: "draft21-418bb.firebasestorage.app",
+  messagingSenderId: "211570854406",
+  appId: "1:211570854406:web:fb2d14c3aed01fc12f5187"
+};
 
-  <script>
-    let gameState = {
-      status: 'setup',
-      players: [],
-      teams: [],
-      participants: [],
-      picks: [],
-      turn: { order: [], index: 0, direction: 1 },
-      settings: { snake: true, randomOrder: false },
-      pendingPick: null,
-      lastPick: null
-    };
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
 
-    let state = {
-      phase: 'setup',
-      playerInput: '',
-      nickname: '',
-      myId: '',
-      isHost: false,
-      selectedCaptains: [],
-      teamAssignments: {},
-      listeners: [],
-      draftOrder: [],
-      manualOrder: false
-    };
+let state = {
+  phase: 'setup',
+  playerInput: '',
+  nickname: '',
+  myId: '',
+  isHost: false,
+  selectedCaptains: [],
+  teamAssignments: {},
+  draftOrder: [],
+  manualOrder: false
+};
 
-    const TEAM_COLORS = {
-      Red: { bg: 'bg-red-500', class: 'red' },
-      White: { bg: 'bg-gray-100', class: 'white' },
-      Black: { bg: 'bg-gray-900', class: 'black' }
-    };
+const TEAM_COLORS = {
+  Red: { bg: 'bg-red-500' },
+  White: { bg: 'bg-gray-100' },
+  Black: { bg: 'bg-gray-900' }
+};
 
-    function notifyListeners() {
-      state.listeners.forEach(callback => callback(gameState));
+function init() {
+  const stored = localStorage.getItem('draft21_nickname');
+  const storedId = localStorage.getItem('draft21_id');
+  const isHost = localStorage.getItem('draft21_is_host') === 'true';
+  
+  if (stored) state.nickname = stored;
+  if (storedId) state.myId = storedId;
+  if (isHost) state.isHost = true;
+
+  try {
+    const sc = localStorage.getItem('draft21_selected_captains');
+    const sa = localStorage.getItem('draft21_team_assignments');
+    if (sc) state.selectedCaptains = JSON.parse(sc);
+    if (sa) state.teamAssignments = JSON.parse(sa);
+  } catch (e) {}
+
+  onSnapshot(doc(db, 'games', 'current'), (snap) => {
+    if (snap.exists()) {
+      state.phase = snap.data().status || 'setup';
     }
+    render();
+  });
+}
 
-    function subscribeToGame(callback) {
-      state.listeners.push(callback);
-      callback(gameState);
+function cleanNames(txt) {
+  return txt.split('\n').map(l => {
+    let c = l.trim().replace(/^\d+[\.\)\-\s]+/, '').replace(/[\d\.\)\-]+$/, '').replace(/\d+/g, '');
+    return c.trim();
+  }).filter(n => n.length > 0).slice(0, 21);
+}
+
+async function initGame() {
+  const names = cleanNames(state.playerInput);
+  if (!names.length) return;
+  const players = names.map((n, i) => ({ id: 'player_'+i, name: n, available: true }));
+  await setDoc(doc(db, 'games', 'current'), {
+    status: 'captains', players, teams: [], participants: [], picks: [],
+    turn: { order: [], index: 0, direction: 1 },
+    settings: { snake: true }, pendingPick: null, lastPick: null
+  });
+  state.isHost = true;
+  localStorage.setItem('draft21_is_host', 'true');
+}
+
+function toggleCap(id) {
+  const idx = state.selectedCaptains.indexOf(id);
+  if (idx > -1) state.selectedCaptains.splice(idx, 1);
+  else if (state.selectedCaptains.length < 3) state.selectedCaptains.push(id);
+  localStorage.setItem('draft21_selected_captains', JSON.stringify(state.selectedCaptains));
+  render();
+}
+
+async function randCaps() {
+  const snap = await getDoc(doc(db, 'games', 'current'));
+  if (!snap.exists()) return;
+  const avail = snap.data().players.filter(p => p.available);
+  const shuf = avail.slice().sort(() => Math.random() - 0.5);
+  state.selectedCaptains = shuf.slice(0, 3).map(p => p.id);
+  const cols = ['Red', 'White', 'Black'];
+  state.teamAssignments = {};
+  state.selectedCaptains.forEach((c, i) => state.teamAssignments[c] = cols[i]);
+  localStorage.setItem('draft21_selected_captains', JSON.stringify(state.selectedCaptains));
+  localStorage.setItem('draft21_team_assignments', JSON.stringify(state.teamAssignments));
+  render();
+}
+
+function assignT(cid, col) {
+  state.teamAssignments[cid] = col;
+  localStorage.setItem('draft21_team_assignments', JSON.stringify(state.teamAssignments));
+  render();
+}
+
+async function finCaps() {
+  if (state.selectedCaptains.length !== 3 || Object.keys(state.teamAssignments).length !== 3) return;
+  const snap = await getDoc(doc(db, 'games', 'current'));
+  if (!snap.exists()) return;
+  const gd = snap.data();
+  const teams = state.selectedCaptains.map(cid => {
+    const cap = gd.players.find(p => p.id === cid);
+    return { name: state.teamAssignments[cid], captain: cap.name, captainId: cid, players: [cap.name] };
+  });
+  const upd = gd.players.map(p => ({ ...p, available: !state.selectedCaptains.includes(p.id) }));
+  await updateDoc(doc(db, 'games', 'current'), { teams, players: upd, status: 'lobby' });
+}
+
+async function joinLob() {
+  if (!state.nickname.trim()) return;
+  const pid = state.myId || 'p_'+Date.now();
+  state.myId = pid;
+  localStorage.setItem('draft21_nickname', state.nickname);
+  localStorage.setItem('draft21_id', pid);
+  await runTransaction(db, async (t) => {
+    const snap = await t.get(doc(db, 'games', 'current'));
+    if (!snap.exists()) return;
+    const gd = snap.data();
+    const mt = gd.teams.find(tm => tm.captain.toLowerCase() === state.nickname.trim().toLowerCase());
+    const part = { id: pid, name: state.nickname, ready: false, teamName: mt ? mt.name : null };
+    if (!gd.participants.some(p => p.id === pid)) {
+      t.update(doc(db, 'games', 'current'), { participants: [...gd.participants, part] });
     }
+  });
+}
 
-    function init() {
-      const storedNickname = localStorage.getItem('draft21_nickname');
-      const storedId = localStorage.getItem('draft21_id');
-      
-      if (storedNickname && storedId) {
-        state.nickname = storedNickname;
-        state.myId = storedId;
-      }
+async function selTeam(tn) {
+  await runTransaction(db, async (t) => {
+    const snap = await t.get(doc(db, 'games', 'current'));
+    if (!snap.exists()) return;
+    const gd = snap.data();
+    const upd = gd.participants.map(p => p.id === state.myId ? { ...p, teamName: tn } : p);
+    t.update(doc(db, 'games', 'current'), { participants: upd });
+  });
+}
 
-      subscribeToGame((data) => {
-        state.phase = data.status || 'setup';
+async function togReady() {
+  await runTransaction(db, async (t) => {
+    const snap = await t.get(doc(db, 'games', 'current'));
+    if (!snap.exists()) return;
+    const gd = snap.data();
+    const my = gd.participants.find(p => p.id === state.myId);
+    if (!my || !my.teamName) return;
+    const upd = gd.participants.map(p => p.id === state.myId ? { ...p, ready: !p.ready } : p);
+    t.update(doc(db, 'games', 'current'), { participants: upd });
+  });
+}
+
+function togMan() {
+  state.manualOrder = !state.manualOrder;
+  if (!state.manualOrder) state.draftOrder = [];
+  else {
+    getDoc(doc(db, 'games', 'current')).then(snap => {
+      if (snap.exists()) {
+        state.draftOrder = snap.data().teams.map(t => t.name);
         render();
-      });
-    }
-
-    function cleanPlayerNames(text) {
-      return text
-        .split('\n')
-        .map(line => {
-          let cleaned = line.trim();
-          cleaned = cleaned.replace(/^\d+[\.\)\-\s]+/, '');
-          cleaned = cleaned.replace(/[\d\.\)\-]+$/, '');
-          cleaned = cleaned.replace(/\d+/g, '');
-          return cleaned.trim();
-        })
-        .filter(name => name.length > 0)
-        .slice(0, 21);
-    }
-
-    function initializeGame() {
-      const names = cleanPlayerNames(state.playerInput);
-      if (names.length === 0) return;
-
-      const players = names.map((name, idx) => ({
-        id: 'player_' + idx,
-        name: name,
-        available: true
-      }));
-
-      gameState = {
-        status: 'captains',
-        players: players,
-        teams: [],
-        participants: [],
-        picks: [],
-        turn: { order: [], index: 0, direction: 1 },
-        settings: { snake: true, randomOrder: false }
-      };
-
-      state.isHost = true;
-      notifyListeners();
-    }
-
-    function toggleCaptain(playerId) {
-      const idx = state.selectedCaptains.indexOf(playerId);
-      if (idx > -1) {
-        state.selectedCaptains.splice(idx, 1);
-      } else if (state.selectedCaptains.length < 3) {
-        state.selectedCaptains.push(playerId);
       }
-      render();
+    });
+  }
+  render();
+}
+
+function moveDO(tn, dir) {
+  const ci = state.draftOrder.indexOf(tn);
+  if (ci === -1) return;
+  const ni = ci + dir;
+  if (ni < 0 || ni >= state.draftOrder.length) return;
+  const tmp = state.draftOrder[ci];
+  state.draftOrder[ci] = state.draftOrder[ni];
+  state.draftOrder[ni] = tmp;
+  render();
+}
+
+function randDO() {
+  state.draftOrder = state.draftOrder.slice().sort(() => Math.random() - 0.5);
+  render();
+}
+
+async function startD() {
+  const snap = await getDoc(doc(db, 'games', 'current'));
+  if (!snap.exists()) return;
+  const gd = snap.data();
+  const parts = gd.participants.filter(p => p.ready);
+  if (!parts.length) return;
+  const trep = new Set(parts.map(p => p.teamName));
+  if (trep.size !== gd.teams.length) { alert('כל קבוצה צריכה משתתף!'); return; }
+  const ac = gd.players.filter(p => p.available).length;
+  const tc = gd.teams.length;
+  const rnds = Math.ceil(ac / tc);
+  let ord = [];
+  const tns = gd.teams.map(t => t.name);
+  if (state.manualOrder && state.draftOrder.length === tc) {
+    for (let r = 0; r < rnds; r++) {
+      ord = ord.concat(r % 2 === 0 ? state.draftOrder : state.draftOrder.slice().reverse());
     }
-
-    function selectCaptainsRandomly() {
-      const availablePlayers = gameState.players.filter(p => p.available);
-      const shuffled = availablePlayers.slice().sort(() => Math.random() - 0.5);
-      state.selectedCaptains = shuffled.slice(0, 3).map(p => p.id);
-      
-      const colors = ['Red', 'White', 'Black'];
-      state.teamAssignments = {};
-      state.selectedCaptains.forEach((captainId, idx) => {
-        state.teamAssignments[captainId] = colors[idx];
-      });
-      render();
+  } else {
+    for (let r = 0; r < rnds; r++) {
+      ord = ord.concat(r % 2 === 0 ? tns : tns.slice().reverse());
     }
+  }
+  await updateDoc(doc(db, 'games', 'current'), {
+    status: 'drafting', turn: { order: ord, index: 0, direction: 1 },
+    pendingPick: null, lastPick: null
+  });
+}
 
-    function assignTeam(captainId, color) {
-      state.teamAssignments[captainId] = color;
-      render();
-    }
+async function makePk(pid) {
+  await runTransaction(db, async (t) => {
+    const snap = await t.get(doc(db, 'games', 'current'));
+    if (!snap.exists()) return;
+    const gd = snap.data();
+    const ctn = gd.turn.order[gd.turn.index];
+    const my = gd.participants.find(p => p.id === state.myId);
+    if (!my || my.teamName !== ctn) return;
+    const pl = gd.players.find(p => p.id === pid);
+    if (!pl || !pl.available) return;
+    t.update(doc(db, 'games', 'current'), {
+      pendingPick: { playerId: pid, playerName: pl.name, teamName: ctn }
+    });
+  });
+}
 
-    function finalizeCaptains() {
-      if (state.selectedCaptains.length !== 3 || Object.keys(state.teamAssignments).length !== 3) return;
+async function confPk() {
+  await runTransaction(db, async (t) => {
+    const snap = await t.get(doc(db, 'games', 'current'));
+    if (!snap.exists()) return;
+    const gd = snap.data();
+    if (!gd.pendingPick) return;
+    const pl = gd.players.find(p => p.id === gd.pendingPick.playerId);
+    const ctn = gd.pendingPick.teamName;
+    const tm = gd.teams.find(t => t.name === ctn);
+    const upp = gd.players.map(p => p.id === gd.pendingPick.playerId ? { ...p, available: false } : p);
+    const upt = gd.teams.map(t => t.name === tm.name ? { ...t, players: [...t.players, pl.name] } : t);
+    const pk = { playerId: gd.pendingPick.playerId, playerName: pl.name, team: tm.name,
+      pickNumber: gd.picks.length + 1, timestamp: Date.now() };
+    const lp = { playerId: pk.playerId, playerName: pk.playerName, teamName: pk.team, turnIndex: gd.turn.index };
+    const ni = gd.turn.index + 1;
+    const ap = upp.filter(p => p.available).length === 0;
+    t.update(doc(db, 'games', 'current'), {
+      players: upp, teams: upt, picks: [...gd.picks, pk], pendingPick: null, lastPick: lp,
+      turn: { ...gd.turn, index: ni }, status: ap ? 'completed' : 'drafting'
+    });
+  });
+  showConf();
+}
 
-      const teams = state.selectedCaptains.map(captainId => {
-        const captain = gameState.players.find(p => p.id === captainId);
-        return {
-          name: state.teamAssignments[captainId],
-          captain: captain.name,
-          captainId: captainId,
-          players: [captain.name]
-        };
-      });
+async function undoPk() {
+  await runTransaction(db, async (t) => {
+    const snap = await t.get(doc(db, 'games', 'current'));
+    if (!snap.exists()) return;
+    const gd = snap.data();
+    if (!gd.lastPick || !gd.picks.length) return;
+    const lp = gd.lastPick;
+    const upp = gd.players.map(p => p.id === lp.playerId ? { ...p, available: true } : p);
+    const upt = gd.teams.map(t => t.name === lp.teamName ? 
+      { ...t, players: t.players.filter(p => p !== lp.playerName) } : t);
+    const upk = gd.picks.slice(0, -1);
+    const nlp = upk.length > 0 ? {
+      playerId: upk[upk.length-1].playerId, playerName: upk[upk.length-1].playerName,
+      teamName: upk[upk.length-1].team, turnIndex: lp.turnIndex - 1
+    } : null;
+    t.update(doc(db, 'games', 'current'), {
+      players: upp, teams: upt, picks: upk, turn: { ...gd.turn, index: lp.turnIndex },
+      pendingPick: null, lastPick: nlp, status: gd.status === 'completed' ? 'drafting' : gd.status
+    });
+  });
+}
 
-      const updatedPlayers = gameState.players.map(p => ({
-        id: p.id,
-        name: p.name,
-        available: !state.selectedCaptains.includes(p.id)
-      }));
+async function canPend() {
+  await updateDoc(doc(db, 'games', 'current'), { pendingPick: null });
+}
 
-      gameState.teams = teams;
-      gameState.players = updatedPlayers;
-      gameState.status = 'lobby';
-      notifyListeners();
-    }
+async function rstDraft() {
+  const snap = await getDoc(doc(db, 'games', 'current'));
+  if (!snap.exists()) return;
+  const gd = snap.data();
+  await updateDoc(doc(db, 'games', 'current'), {
+    picks: [], turn: { order: gd.turn.order, index: 0, direction: 1 },
+    status: 'drafting', pendingPick: null, lastPick: null,
+    players: gd.players.map(p => ({ ...p, available: !state.selectedCaptains.includes(p.id) })),
+    teams: gd.teams.map(t => ({ ...t, players: [t.captain] }))
+  });
+}
 
-    function joinLobby() {
-      if (!state.nickname.trim()) return;
-      
-      const participantId = state.myId || 'participant_' + Date.now();
-      state.myId = participantId;
-      localStorage.setItem('draft21_nickname', state.nickname);
-      localStorage.setItem('draft21_id', participantId);
+async function shareWA() {
+  const snap = await getDoc(doc(db, 'games', 'current'));
+  if (!snap.exists()) return;
+  const gd = snap.data();
+  let msg = '⚽ תוצאות הדראפט:\n\n';
+  gd.teams.forEach(t => {
+    const c = t.name === 'Red' ? '🔴' : t.name === 'White' ? '⚪' : '⚫';
+    msg += c + ' קבוצה ' + t.name + '\nקפטן: ' + t.captain + '\nשחקנים: ' + t.players.join(', ') + '\n\n';
+  });
+  window.open('https://wa.me/?text=' + encodeURIComponent(msg), '_blank');
+}
 
-      const matchingTeam = gameState.teams.find(t => 
-        t.captain.toLowerCase() === state.nickname.trim().toLowerCase()
-      );
+function showConf() {
+  for (let i = 0; i < 50; i++) {
+    setTimeout(() => {
+      const c = document.createElement('div');
+      c.className = 'confetti';
+      c.textContent = ['🎉','⚽','🏆','✨','🎊'][Math.floor(Math.random()*5)];
+      c.style.left = Math.random()*100 + '%';
+      c.style.top = '-50px';
+      document.body.appendChild(c);
+      setTimeout(() => c.remove(), 3000);
+    }, i * 50);
+  }
+}
 
-      const participant = {
-        id: participantId,
-        name: state.nickname,
-        ready: false,
-        teamName: matchingTeam ? matchingTeam.name : null
-      };
+async function fullRst() {
+  if (!confirm('מחיקה מוחלטת?')) return;
+  localStorage.clear();
+  await setDoc(doc(db, 'games', 'current'), {
+    status: 'setup', players: [], teams: [], participants: [], picks: [],
+    turn: { order: [], index: 0, direction: 1 }, settings: { snake: true },
+    pendingPick: null, lastPick: null
+  });
+  state = { phase: 'setup', playerInput: '', nickname: '', myId: '', isHost: false,
+    selectedCaptains: [], teamAssignments: {}, draftOrder: [], manualOrder: false };
+}
 
-      const exists = gameState.participants.some(p => p.id === participantId);
-      if (!exists) {
-        gameState.participants.push(participant);
-        notifyListeners();
+function getTurn(gd) {
+  if (!gd || state.phase !== 'drafting') return null;
+  const ctn = gd.turn.order[gd.turn.index];
+  const tm = gd.teams.find(t => t.name === ctn);
+  const my = gd.participants.find(p => p.id === state.myId);
+  return { team: tm, captain: tm.captain, isMyTurn: my && my.teamName === ctn };
+}
+
+function render() {
+  getDoc(doc(db, 'games', 'current')).then(snap => {
+    const gd = snap.exists() ? snap.data() : null;
+    const a = document.getElementById('app');
+    if (state.phase === 'setup' || !gd || !gd.players.length) a.innerHTML = rSetup();
+    else if (state.phase === 'captains') a.innerHTML = rCaps(gd);
+    else if (state.phase === 'lobby') a.innerHTML = rLobby(gd);
+    else if (state.phase === 'drafting') a.innerHTML = rDraft(gd);
+    else if (state.phase === 'completed') a.innerHTML = rComp(gd);
+  });
+}
+
+function rSetup() {
+  return '<div class="min-h-screen bg-gradient-to-br from-green-500 to-blue-600 p-4 flex items-center justify-center">' +
+    '<div class="bg-white rounded-3xl shadow-2xl p-8 max-w-md w-full"><div class="text-center mb-6">' +
+    '<div class="text-6xl mb-4">🏆</div><h1 class="text-4xl font-bold text-gray-800">Draft21</h1>' +
+    '<p class="text-gray-600 mt-2">כלי דראפט כדורגל בזמן אמת</p>' +
+    '<div class="mt-2 inline-flex items-center gap-2 text-xs text-green-600 bg-green-50 px-3 py-1 rounded-full">' +
+    '<div class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>🌐 עובד בין כל המכשירים</div></div>' +
+    '<div class="space-y-4"><div><label class="block text-sm font-medium text-gray-700 mb-2">הדבק רשימת שחקנים (עד 21)</label>' +
+    '<textarea id="playerInput" placeholder="1. דוד&#10;2. יואב&#10;3. אלון" class="w-full h-48 p-3 border-2 border-gray-300 rounded-lg"></textarea></div>' +
+    '<button onclick="hInitG()" class="w-full bg-gradient-to-r from-blue-500 to-purple-600 text-white py-4 rounded-xl font-bold text-lg">התחל הגדרת דראפט</button>' +
+    '<button onclick="hFullR()" class="w-full bg-red-100 text-red-700 py-2 rounded-lg text-sm hover:bg-red-200">🔄 איפוס מלא</button></div></div></div>';
+}
+
+function rCaps(gd) {
+  const sc = state.selectedCaptains.length;
+  const ac = Object.keys(state.teamAssignments).length;
+  let h = '<div class="min-h-screen bg-gradient-to-br from-purple-500 to-pink-600 p-4"><div class="max-w-4xl mx-auto">' +
+    '<div class="bg-white rounded-3xl shadow-2xl p-8 mb-6"><h2 class="text-3xl font-bold mb-2">בחר 3 קפטנים</h2>' +
+    '<p class="text-gray-600 mb-6">לחץ על שחקנים או הגרל</p><div class="flex gap-4 mb-6">' +
+    '<button onclick="hRandC()" class="bg-purple-500 text-white px-6 py-3 rounded-xl hover:bg-purple-600">🔀 הגרל קפטנים וקבוצות</button></div>' +
+    '<div class="grid grid-cols-2 md:grid-cols-3 gap-3 mb-6">';
+  gd.players.filter(p => p.available).forEach(pl => {
+    const sel = state.selectedCaptains.includes(pl.id);
+    h += '<button onclick="hTogC(\'' + pl.id + '\')" class="p-4 rounded-xl border-2 ' +
+      (sel ? 'bg-blue-500 text-white border-blue-600 scale-105' : 'bg-gray-50 border-gray-300 hover:border-blue-400') +
+      '">' + pl.name + '</button>';
+  });
+  h += '</div>';
+  if (sc === 3) {
+    h += '<div class="space-y-4 mb-6"><h3 class="text-xl font-bold mb-4">הקצה צבעי חולצות</h3>';
+    state.selectedCaptains.forEach(cid => {
+      const cap = gd.players.find(p => p.id === cid);
+      const asn = state.teamAssignments[cid];
+      h += '<div class="flex items-center gap-4 bg-gray-50 p-4 rounded-xl"><span class="font-bold w-32">' + cap.name + '</span>';
+      if (asn) {
+        h += '<span class="text-sm text-gray-600">→</span><div class="flex items-center gap-2">' +
+          '<div class="w-8 h-8 rounded-full ' + TEAM_COLORS[asn].bg + '"></div><span class="font-medium">' + asn + '</span></div>';
       }
+      h += '<div class="flex gap-2 mr-auto">';
+      Object.keys(TEAM_COLORS).forEach(col => {
+        const isA = state.teamAssignments[cid] === col;
+        const isU = Object.values(state.teamAssignments).includes(col) && !isA;
+        h += '<button onclick="hAssT(\'' + cid + '\',\'' + col + '\')" ' + (isU ? 'disabled' : '') +
+          ' class="w-16 h-16 rounded-full border-4 ' + TEAM_COLORS[col].bg + ' ' +
+          (isA ? 'border-yellow-400 scale-110 shadow-lg' : 'border-gray-300 opacity-50') + ' ' +
+          (isU ? 'opacity-30 cursor-not-allowed' : 'hover:scale-105') + '"></button>';
+      });
+      h += '</div></div>';
+    });
+    h += '</div>';
+  }
+  h += '<button onclick="hFinC()" ' + (sc !== 3 || ac !== 3 ? 'disabled' : '') +
+    ' class="w-full bg-gradient-to-r from-green-500 to-teal-600 text-white py-4 rounded-xl font-bold disabled:opacity-50">המשך ללובי</button></div></div></div>';
+  return h;
+}
+
+function rLobby(gd) {
+  const my = gd.participants.find(p => p.id === state.myId);
+  const rc = gd.participants.filter(p => p.ready).length;
+  let h = '<div class="min-h-screen bg-gradient-to-br from-blue-500 to-indigo-600 p-4"><div class="max-w-2xl mx-auto">' +
+    '<div class="bg-white rounded-3xl shadow-2xl p-8"><div class="text-center mb-8"><div class="text-6xl mb-4">👥</div>' +
+    '<h2 class="text-3xl font-bold mb-2">לובי הדראפט</h2><p class="text-gray-600">מחכים לשחקנים...</p>' +
+    '<div class="mt-2 inline-flex items-center gap-2 text-xs text-green-600 bg-green-50 px-3 py-1 rounded-full">' +
+    '<div class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>מסונכרן בזמן אמת</div></div>';
+  if (!my) {
+    h += '<div class="mb-6"><input id="nickIn" placeholder="הכנס כינוי" class="w-full p-4 border-2 rounded-xl mb-4" />' +
+      '<button onclick="hJoinL()" class="w-full bg-blue-500 text-white py-4 rounded-xl font-bold hover:bg-blue-600">הצטרף ללובי</button></div>';
+  }
+  h += '<div class="space-y-3 mb-6">';
+  gd.participants.forEach(p => {
+    const tm = p.teamName ? gd.teams.find(t => t.name === p.teamName) : null;
+    h += '<div class="flex items-center justify-between p-4 rounded-xl ' +
+      (p.ready ? 'bg-green-100 border-2 border-green-500' : 'bg-gray-100 border-2 border-gray-300') + '">' +
+      '<div class="flex items-center gap-3">' +
+      (tm ? '<div class="w-8 h-8 rounded-full ' + TEAM_COLORS[tm.name].bg + '"></div>' : '') +
+      '<div><span class="font-medium block">' + p.name + '</span>' +
+      (tm ? '<span class="text-xs text-gray-600">קבוצה: ' + tm.name + '</span>' : '<span class="text-xs text-red-600">לא בחר קבוצה</span>') +
+      '</div></div>' + (p.ready ? '<span class="text-2xl">✓</span>' : '') + '</div>';
+  });
+  h += '</div>';
+  if (my) {
+    if (!my.teamName) {
+      h += '<div class="mb-4 p-4 bg-yellow-50 border-2 border-yellow-300 rounded-xl">' +
+        '<p class="font-bold text-yellow-800 mb-3 text-center">בחר את הקבוצה שלך:</p><div class="grid grid-cols-3 gap-3">';
+      gd.teams.forEach(t => {
+        const taken = gd.participants.some(p => p.teamName === t.name && p.id !== state.myId);
+        h += '<button onclick="hSelT(\'' + t.name + '\')" ' + (taken ? 'disabled' : '') +
+          ' class="p-4 rounded-xl ' + (taken ? 'bg-gray-200 opacity-50 cursor-not-allowed' : 'bg-white border-2 border-gray-300 hover:border-blue-500') + '">' +
+          '<div class="w-12 h-12 rounded-full ' + TEAM_COLORS[t.name].bg + ' mx-auto mb-2"></div>' +
+          '<p class="font-bold text-sm">' + t.name + '</p><p class="text-xs text-gray-600">' + t.captain + '</p>' +
+          (taken ? '<p class="text-xs text-red-600 mt-1">תפוס</p>' : '') + '</button>';
+      });
+      h += '</div></div>';
     }
-
-    function selectTeam(teamName) {
-      gameState.participants = gameState.participants.map(p =>
-        p.id === state.myId ? { id: p.id, name: p.name, ready: p.ready, teamName: teamName } : p
-      );
-      notifyListeners();
-    }
-
-    function toggleReady() {
-      const myParticipant = gameState.participants.find(p => p.id === state.myId);
-      if (!myParticipant || !myParticipant.teamName) return;
-      
-      gameState.participants = gameState.participants.map(p =>
-        p.id === state.myId ? { id: p.id, name: p.name, ready: !p.ready, teamName: p.teamName } : p
-      );
-      notifyListeners();
-    }
-
-    function startDraft() {
-      const participants = gameState.participants.filter(p => p.ready);
-      if (participants.length === 0) return;
-
-      const teamsRepresented = new Set(participants.map(p => p.teamName));
-      if (teamsRepresented.size !== gameState.teams.length) {
-        alert('כל קבוצה צריכה משתתף מוכן לפחות!');
-        return;
-      }
-
-      const availableCount = gameState.players.filter(p => p.available).length;
-      const teamsCount = gameState.teams.length;
-      const rounds = Math.ceil(availableCount / teamsCount);
-      
-      let order = [];
-      const teamNames = gameState.teams.map(t => t.name);
-      
-      if (state.manualOrder && state.draftOrder.length === teamsCount) {
-        for (let round = 0; round < rounds; round++) {
-          if (round % 2 === 0) {
-            order = order.concat(state.draftOrder);
-          } else {
-            order = order.concat(state.draftOrder.slice().reverse());
-          }
+    h += '<button onclick="hTogR()" ' + (!my.teamName ? 'disabled' : '') +
+      ' class="w-full py-4 rounded-xl font-bold mb-4 ' +
+      (!my.teamName ? 'bg-gray-200 text-gray-400 cursor-not-allowed' : my.ready ? 'bg-gray-300 text-gray-700' : 'bg-green-500 text-white hover:bg-green-600') +
+      '">' + (my.ready ? 'ביטול מוכן' : my.teamName ? 'אני מוכן!' : 'בחר קבוצה קודם') + '</button>';
+  }
+  if (state.isHost && rc > 0) {
+    h += '<div class="border-t-2 pt-6 mt-6"><h3 class="text-xl font-bold mb-4">הגדרות דראפט</h3><div class="mb-4">' +
+      '<button onclick="hTogMan()" class="w-full py-3 rounded-xl font-medium ' +
+      (state.manualOrder ? 'bg-purple-500 text-white' : 'bg-gray-200 text-gray-700') + '">' +
+      (state.manualOrder ? '✓ סדר ידני פעיל' : 'סדר אקראי (לחץ לסדר ידני)') + '</button></div>';
+    if (state.manualOrder && state.draftOrder.length > 0) {
+      h += '<div class="bg-gray-50 rounded-xl p-4 mb-4"><div class="flex items-center justify-between mb-3">' +
+        '<h4 class="font-bold text-gray-700">סדר הקבוצות:</h4>' +
+        '<button onclick="hRandDO()" class="text-sm bg-purple-100 text-purple-700 px-3 py-1 rounded-lg hover:bg-purple-200">🔀 ערבב</button></div>' +
+        '<p class="text-xs text-gray-500 mb-3">הסדר יהפוך כל סיבוב</p><div class="space-y-2">';
+      state.draftOrder.forEach((tn, idx) => {
+        const tm = gd.teams.find(t => t.name === tn);
+        if (tm) {
+          h += '<div class="flex items-center gap-2 bg-white p-3 rounded-lg"><span class="font-bold text-lg text-gray-500 w-8">' + (idx+1) + '.</span>' +
+            '<div class="w-8 h-8 rounded-full ' + TEAM_COLORS[tn].bg + '"></div><div class="flex-1">' +
+            '<span class="font-bold">' + tn + '</span><span class="text-sm text-gray-500 mr-2">(' + tm.captain + ')</span></div>' +
+            '<div class="flex gap-1"><button onclick="hMoveDO(\'' + tn + '\',-1)" ' + (idx === 0 ? 'disabled' : '') +
+            ' class="w-8 h-8 bg-gray-200 rounded hover:bg-gray-300 disabled:opacity-30">↑</button>' +
+            '<button onclick="hMoveDO(\'' + tn + '\',1)" ' + (idx === state.draftOrder.length-1 ? 'disabled' : '') +
+            ' class="w-8 h-8 bg-gray-200 rounded hover:bg-gray-300 disabled:opacity-30">↓</button></div></div>';
         }
-      } else {
-        for (let round = 0; round < rounds; round++) {
-          if (round % 2 === 0) {
-            order = order.concat(teamNames);
-          } else {
-            order = order.concat(teamNames.slice().reverse());
-          }
-        }
-      }
-
-      gameState.status = 'drafting';
-      gameState.turn = { order: order, index: 0, direction: 1 };
-      gameState.pendingPick = null;
-      gameState.lastPick = null;
-      notifyListeners();
-    }
-
-    function toggleManualOrder() {
-      state.manualOrder = !state.manualOrder;
-      if (!state.manualOrder) {
-        state.draftOrder = [];
-      } else {
-        state.draftOrder = gameState.teams.map(t => t.name);
-      }
-      render();
-    }
-
-    function moveDraftOrder(teamName, direction) {
-      const currentIndex = state.draftOrder.indexOf(teamName);
-      if (currentIndex === -1) return;
-      
-      const newIndex = currentIndex + direction;
-      if (newIndex < 0 || newIndex >= state.draftOrder.length) return;
-      
-      const temp = state.draftOrder[currentIndex];
-      state.draftOrder[currentIndex] = state.draftOrder[newIndex];
-      state.draftOrder[newIndex] = temp;
-      
-      render();
-    }
-
-    function randomizeDraftOrder() {
-      state.draftOrder = state.draftOrder.slice().sort(() => Math.random() - 0.5);
-      render();
-    }
-
-    function makePick(playerId) {
-      const currentTeamName = gameState.turn.order[gameState.turn.index];
-      const currentTeam = gameState.teams.find(t => t.name === currentTeamName);
-      
-      const myParticipant = gameState.participants.find(p => p.id === state.myId);
-      
-      if (!myParticipant || myParticipant.teamName !== currentTeamName) return;
-
-      const player = gameState.players.find(p => p.id === playerId);
-      if (!player || !player.available) return;
-
-      gameState.pendingPick = {
-        playerId: playerId,
-        playerName: player.name,
-        teamName: currentTeamName
-      };
-
-      notifyListeners();
-    }
-
-    function confirmPick() {
-      if (!gameState.pendingPick) return;
-
-      const player = gameState.players.find(p => p.id === gameState.pendingPick.playerId);
-      const currentTeamName = gameState.pendingPick.teamName;
-      const team = gameState.teams.find(t => t.name === currentTeamName);
-
-      gameState.players = gameState.players.map(p =>
-        p.id === gameState.pendingPick.playerId ? { id: p.id, name: p.name, available: false } : p
-      );
-
-      gameState.teams = gameState.teams.map(t =>
-        t.name === team.name ? { name: t.name, captain: t.captain, captainId: t.captainId, players: t.players.concat([player.name]) } : t
-      );
-
-      const pick = {
-        playerId: gameState.pendingPick.playerId,
-        playerName: player.name,
-        team: team.name,
-        pickNumber: gameState.picks.length + 1,
-        timestamp: Date.now()
-      };
-      
-      gameState.lastPick = {
-        playerId: pick.playerId,
-        playerName: pick.playerName,
-        teamName: pick.team,
-        turnIndex: gameState.turn.index
-      };
-      
-      gameState.picks.push(pick);
-      gameState.pendingPick = null;
-      gameState.turn.index++;
-
-      const allPicked = gameState.players.filter(p => p.available).length === 0;
-      if (allPicked) {
-        gameState.status = 'completed';
-      }
-
-      notifyListeners();
-      showConfetti();
-    }
-
-    function undoPick() {
-      if (!gameState.lastPick || gameState.picks.length === 0) return;
-
-      const lastPick = gameState.lastPick;
-      
-      gameState.players = gameState.players.map(p =>
-        p.id === lastPick.playerId ? { id: p.id, name: p.name, available: true } : p
-      );
-
-      gameState.teams = gameState.teams.map(t => {
-        if (t.name === lastPick.teamName) {
-          return {
-            name: t.name,
-            captain: t.captain,
-            captainId: t.captainId,
-            players: t.players.filter(p => p !== lastPick.playerName)
-          };
-        }
-        return t;
       });
-
-      gameState.picks.pop();
-      gameState.turn.index = lastPick.turnIndex;
-      gameState.pendingPick = null;
-      gameState.lastPick = gameState.picks.length > 0 ? {
-        playerId: gameState.picks[gameState.picks.length - 1].playerId,
-        playerName: gameState.picks[gameState.picks.length - 1].playerName,
-        teamName: gameState.picks[gameState.picks.length - 1].team,
-        turnIndex: gameState.turn.index - 1
-      } : null;
-
-      if (gameState.status === 'completed') {
-        gameState.status = 'drafting';
-      }
-
-      notifyListeners();
+      h += '</div></div>';
     }
+    h += '</div>';
+  }
+  if (state.isHost) {
+    h += '<button onclick="hStartD()" ' + (rc === 0 ? 'disabled' : '') +
+      ' class="w-full bg-gradient-to-r from-orange-500 to-red-600 text-white py-4 rounded-xl font-bold text-lg disabled:opacity-50 flex items-center justify-center gap-2">▶️ התחל דראפט (' + rc + ' מוכנים)</button>';
+  }
+  h += '</div></div></div>';
+  return h;
+}
 
-    function cancelPendingPick() {
-      gameState.pendingPick = null;
-      notifyListeners();
-    }
+function rDraft(gd) {
+  const ti = getTurn(gd);
+  let h = '<div class="min-h-screen bg-gradient-to-br from-green-600 to-teal-600 p-4"><div class="max-w-6xl mx-auto">';
+  if (ti) {
+    h += '<div class="mb-6 p-6 rounded-3xl shadow-xl ' + (ti.isMyTurn ? 'bg-yellow-400 animate-pulse' : 'bg-white') + '">' +
+      '<div class="text-center"><p class="text-2xl font-bold mb-2">' +
+      (ti.isMyTurn ? '🔥 התור שלך לבחור! 🔥' : '⏳ התור של: ' + ti.captain) + '</p>' +
+      '<p class="text-lg font-medium">קבוצה: <span class="font-bold">' + ti.team.name + '</span></p>' +
+      '<div class="mt-2 inline-flex items-center gap-2 text-xs ' + (ti.isMyTurn ? 'text-gray-700' : 'text-green-600') + ' bg-white bg-opacity-50 px-3 py-1 rounded-full">' +
+      '<div class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>מסונכרן בזמן אמת</div></div></div>';
+  }
+  if (gd.pendingPick) {
+    h += '<div class="mb-6 p-6 rounded-2xl bg-orange-100 border-4 border-orange-400 shadow-xl">' +
+      '<div class="text-center"><p class="text-lg font-bold text-orange-800 mb-3">✓ נבחר: ' + gd.pendingPick.playerName + '</p>' +
+      '<div class="flex gap-3 justify-center">' +
+      '<button onclick="hConfP()" class="bg-green-500 text-white px-8 py-3 rounded-xl font-bold hover:bg-green-600">✓ סיימתי - עבור לתור הבא</button>' +
+      '<button onclick="hCanPend()" class="bg-gray-400 text-white px-6 py-3 rounded-xl font-bold hover:bg-gray-500">✗ בטל בחירה</button>' +
+      '</div></div></div>';
+  }
+  h += '<div class="bg-white rounded-3xl shadow-2xl p-6 mb-6"><div class="flex items-center justify-between mb-4">' +
+    '<h3 class="text-2xl font-bold">שחקנים זמינים</h3>';
+  if (state.isHost && gd.lastPick) {
+    h += '<button onclick="hUndoP()" class="bg-red-100 text-red-700 px-4 py-2 rounded-lg font-bold hover:bg-red-200">↶ אחורה</button>';
+  }
+  h += '</div><div class="grid grid-cols-2 md:grid-cols-4 gap-3">';
+  gd.players.filter(p => p.available).forEach(pl => {
+    const canP = ti && ti.isMyTurn && !gd.pendingPick;
+    const isPend = gd.pendingPick && gd.pendingPick.playerId === pl.id;
+    h += '<button onclick="hMakePk(\'' + pl.id + '\')" ' + (!canP ? 'disabled' : '') +
+      ' class="p-4 rounded-xl border-2 ' +
+      (isPend ? 'bg-orange-400 text-white border-orange-600 scale-105 animate-pulse' : 
+       canP ? 'bg-gradient-to-br from-blue-400 to-purple-500 text-white border-purple-600 hover:scale-105' : 
+       'bg-gray-100 text-gray-500 border-gray-300 cursor-not-allowed') + '">' + pl.name + '</button>';
+  });
+  h += '</div></div><div class="grid md:grid-cols-3 gap-4 mb-6">';
+  gd.teams.forEach(t => {
+    h += '<div class="bg-white rounded-3xl shadow-xl p-6">' +
+      '<div class="w-12 h-12 rounded-full ' + TEAM_COLORS[t.name].bg + ' mx-auto mb-3"></div>' +
+      '<h3 class="text-xl font-bold text-center mb-2">' + t.name + '</h3>' +
+      '<p class="text-sm text-gray-600 text-center mb-4">קפטן: ' + t.captain + '</p><div class="space-y-2">';
+    t.players.forEach(p => {
+      h += '<div class="bg-gray-100 p-2 rounded-lg text-center text-sm">' + p + '</div>';
+    });
+    h += '</div></div>';
+  });
+  h += '</div>';
+  if (state.isHost) {
+    h += '<div class="flex gap-2"><button onclick="hRstD()" class="flex-1 bg-red-500 text-white py-3 rounded-xl font-bold hover:bg-red-600">🔄 אפס דראפט</button>' +
+      '<button onclick="hFullR()" class="px-4 bg-gray-500 text-white py-3 rounded-xl font-bold hover:bg-gray-600" title="איפוס מלא">🗑️</button></div>';
+  }
+  h += '</div></div>';
+  return h;
+}
 
-    function resetDraft() {
-      gameState.picks = [];
-      gameState.turn = { order: gameState.turn.order, index: 0, direction: 1 };
-      gameState.status = 'drafting';
-      gameState.pendingPick = null;
-      gameState.lastPick = null;
-      gameState.players = gameState.players.map(p => ({
-        id: p.id,
-        name: p.name,
-        available: !state.selectedCaptains.includes(p.id)
-      }));
-      gameState.teams = gameState.teams.map(t => ({
-        name: t.name,
-        captain: t.captain,
-        captainId: t.captainId,
-        players: [t.captain]
-      }));
-      notifyListeners();
-    }
+function rComp(gd) {
+  let h = '<div class="min-h-screen bg-gradient-to-br from-yellow-400 to-orange-500 p-4"><div class="max-w-4xl mx-auto">' +
+    '<div class="bg-white rounded-3xl shadow-2xl p-8 mb-6"><div class="text-center mb-8">' +
+    '<div class="text-7xl mb-4 animate-bounce">🏆</div><h2 class="text-4xl font-bold mb-2">הדראפט הסתיים!</h2>' +
+    '<p class="text-gray-600">הנה הקבוצות שלכם</p></div><div class="grid md:grid-cols-3 gap-6 mb-8">';
+  gd.teams.forEach(t => {
+    h += '<div class="bg-gradient-to-br from-gray-50 to-gray-100 rounded-2xl p-6 border-4 border-gray-300">' +
+      '<div class="w-16 h-16 rounded-full ' + TEAM_COLORS[t.name].bg + ' mx-auto mb-4"></div>' +
+      '<h3 class="text-2xl font-bold text-center mb-3">' + t.name + '</h3>' +
+      '<div class="bg-yellow-100 border-2 border-yellow-400 rounded-lg p-3 mb-4">' +
+      '<p class="text-center font-bold text-yellow-800">👑 ' + t.captain + '</p></div><div class="space-y-2">';
+    t.players.filter(p => p !== t.captain).forEach(p => {
+      h += '<div class="bg-white p-3 rounded-lg text-center border border-gray-200">' + p + '</div>';
+    });
+    h += '</div></div>';
+  });
+  h += '</div><div class="space-y-4">' +
+    '<button onclick="hShareWA()" class="w-full bg-green-500 text-white py-4 rounded-xl font-bold text-lg hover:bg-green-600 flex items-center justify-center gap-2">📤 שתף בוואטסאפ</button>';
+  if (state.isHost) {
+    h += '<div class="flex gap-2">' +
+      '<button onclick="hRstD()" class="flex-1 bg-gray-500 text-white py-3 rounded-xl font-bold hover:bg-gray-600">🔄 התחל דראפט חדש</button>' +
+      '<button onclick="hFullR()" class="px-4 bg-red-500 text-white py-3 rounded-xl font-bold hover:bg-red-600" title="איפוס מלא">🗑️</button></div>';
+  }
+  h += '</div></div></div></div>';
+  return h;
+}
 
-    function shareOnWhatsApp() {
-      let message = '⚽ תוצאות הדראפט:\n\n';
-      
-      gameState.teams.forEach((team) => {
-        const color = team.name === 'Red' ? '🔴' : team.name === 'White' ? '⚪' : '⚫';
-        message += color + ' קבוצה ' + team.name + '\n';
-        message += 'קפטן: ' + team.captain + '\n';
-        message += 'שחקנים: ' + team.players.join(', ') + '\n\n';
-      });
+window.hInitG = () => { state.playerInput = document.getElementById('playerInput').value; initGame(); };
+window.hTogC = toggleCap;
+window.hRandC = randCaps;
+window.hAssT = assignT;
+window.hFinC = finCaps;
+window.hJoinL = () => { state.nickname = document.getElementById('nickIn').value; joinLob(); };
+window.hSelT = selTeam;
+window.hTogR = togReady;
+window.hTogMan = togMan;
+window.hMoveDO = moveDO;
+window.hRandDO = randDO;
+window.hStartD = startD;
+window.hMakePk = makePk;
+window.hConfP = confPk;
+window.hUndoP = undoPk;
+window.hCanPend = canPend;
+window.hRstD = rstDraft;
+window.hShareWA = shareWA;
+window.hFullR = fullRst;
 
-      const url = 'https://wa.me/?text=' + encodeURIComponent(message);
-      window.open(url, '_blank');
-    }
-
-    function showConfetti() {
-      for (let i = 0; i < 50; i++) {
-        setTimeout(() => {
-          const confetti = document.createElement('div');
-          confetti.className = 'confetti';
-          const emojis = ['🎉', '⚽', '🏆', '✨', '🎊'];
-          confetti.textContent = emojis[Math.floor(Math.random() * emojis.length)];
-          confetti.style.left = Math.random() * 100 + '%';
-          confetti.style.top = '-50px';
-          document.body.appendChild(confetti);
-          setTimeout(() => confetti.remove(), 3000);
-        }, i * 50);
-      }
-    }
-
-    function getCurrentTurnInfo() {
-      if (!gameState || state.phase !== 'drafting') return null;
-      const currentTeamName = gameState.turn.order[gameState.turn.index];
-      const team = gameState.teams.find(t => t.name === currentTeamName);
-      
-      const myParticipant = gameState.participants.find(p => p.id === state.myId);
-      const isMyTurn = myParticipant && myParticipant.teamName === currentTeamName;
-      
-      return { 
-        team: team,
-        captain: team.captain,
-        isMyTurn: isMyTurn
-      };
-    }
-
-    function render() {
-      const app = document.getElementById('app');
-      
-      if (state.phase === 'setup' || !gameState.players.length) {
-        app.innerHTML = renderSetup();
-      } else if (state.phase === 'captains') {
-        app.innerHTML = renderCaptains();
-      } else if (state.phase === 'lobby') {
-        app.innerHTML = renderLobby();
-      } else if (state.phase === 'drafting') {
-        app.innerHTML = renderDrafting();
-      } else if (state.phase === 'completed') {
-        app.innerHTML = renderCompleted();
-      }
-    }
-
-    function renderSetup() {
-      return '<div class="min-h-screen bg-gradient-to-br from-green-500 to-blue-600 p-4 flex items-center justify-center">' +
-        '<div class="bg-white rounded-3xl shadow-2xl p-8 max-w-md w-full">' +
-          '<div class="text-center mb-6">' +
-            '<div class="text-6xl mb-4">🏆</div>' +
-            '<h1 class="text-4xl font-bold text-gray-800">Draft21</h1>' +
-            '<p class="text-gray-600 mt-2">כלי דראפט כדורגל בזמן אמת</p>' +
-          '</div>' +
-          '<div class="space-y-4">' +
-            '<div>' +
-              '<label class="block text-sm font-medium text-gray-700 mb-2">הדבק רשימת שחקנים (עד 21)</label>' +
-              '<textarea id="playerInput" placeholder="1. דוד&#10;2. יואב&#10;3. אלון&#10;4. עומר&#10;5. נועם" class="w-full h-48 p-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all"></textarea>' +
-            '</div>' +
-            '<button onclick="handleInitGame()" class="w-full bg-gradient-to-r from-blue-500 to-purple-600 text-white py-4 rounded-xl font-bold text-lg hover:from-blue-600 hover:to-purple-700 transition-all transform hover:scale-105">התחל הגדרת דראפט</button>' +
-          '</div>' +
-        '</div>' +
-      '</div>';
-    }
-
-    function renderCaptains() {
-      const selectedCount = state.selectedCaptains.length;
-      const assignedCount = Object.keys(state.teamAssignments).length;
-      
-      let html = '<div class="min-h-screen bg-gradient-to-br from-purple-500 to-pink-600 p-4">' +
-        '<div class="max-w-4xl mx-auto">' +
-          '<div class="bg-white rounded-3xl shadow-2xl p-8 mb-6">' +
-            '<h2 class="text-3xl font-bold text-gray-800 mb-2">בחר 3 קפטנים</h2>' +
-            '<p class="text-gray-600 mb-6">לחץ על שחקנים או הגרל באקראי</p>' +
-            '<div class="flex gap-4 mb-6">' +
-              '<button onclick="handleRandomCaptains()" class="flex items-center gap-2 bg-purple-500 text-white px-6 py-3 rounded-xl hover:bg-purple-600 transition-all">🔀 הגרל קפטנים וקבוצות</button>' +
-            '</div>' +
-            '<div class="grid grid-cols-2 md:grid-cols-3 gap-3 mb-6">';
-      
-      gameState.players.filter(p => p.available).forEach(player => {
-        const isSelected = state.selectedCaptains.includes(player.id);
-        html += '<button onclick="handleToggleCaptain(\'' + player.id + '\')" class="p-4 rounded-xl border-2 transition-all ' + 
-          (isSelected ? 'bg-blue-500 text-white border-blue-600 scale-105' : 'bg-gray-50 border-gray-300 hover:border-blue-400') + 
-          '">' + player.name + '</button>';
-      });
-      
-      html += '</div>';
-
-      if (selectedCount === 3) {
-        html += '<div class="space-y-4 mb-6">' +
-          '<h3 class="text-xl font-bold text-gray-800">הקצה צבעי חולצות לקפטנים</h3>' +
-          '<p class="text-sm text-gray-600 mb-4">לחץ על צבע עבור כל קפטן</p>';
-        
-        state.selectedCaptains.forEach(captainId => {
-          const captain = gameState.players.find(p => p.id === captainId);
-          const assignedColor = state.teamAssignments[captainId];
-          html += '<div class="flex items-center gap-4 bg-gray-50 p-4 rounded-xl">' +
-            '<span class="font-bold w-32">' + captain.name + '</span>';
-          
-          if (assignedColor) {
-            html += '<span class="text-sm text-gray-600">→</span>' +
-              '<div class="flex items-center gap-2">' +
-                '<div class="w-8 h-8 rounded-full ' + TEAM_COLORS[assignedColor].bg + '"></div>' +
-                '<span class="font-medium">' + assignedColor + '</span>' +
-              '</div>';
-          }
-          
-          html += '<div class="flex gap-2 mr-auto">';
-          
-          Object.keys(TEAM_COLORS).forEach(color => {
-            const isAssigned = state.teamAssignments[captainId] === color;
-            const isUsed = Object.values(state.teamAssignments).includes(color) && !isAssigned;
-            html += '<button onclick="handleAssignTeam(\'' + captainId + '\', \'' + color + '\')" ' +
-              (isUsed ? 'disabled' : '') +
-              ' class="w-16 h-16 rounded-full border-4 transition-all ' + TEAM_COLORS[color].bg + ' ' +
-              (isAssigned ? 'border-yellow-400 scale-110 shadow-lg' : 'border-gray-300 opacity-50') + ' ' +
-              (isUsed ? 'opacity-30 cursor-not-allowed' : 'hover:scale-105') + '" title="' + color + '"></button>';
-          });
-          
-          html += '</div></div>';
-        });
-        
-        html += '</div>';
-      }
-
-      html += '<button onclick="handleFinalizeCaptains()" ' +
-        (selectedCount !== 3 || assignedCount !== 3 ? 'disabled' : '') +
-        ' class="w-full bg-gradient-to-r from-green-500 to-teal-600 text-white py-4 rounded-xl font-bold text-lg hover:from-green-600 hover:to-teal-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all">המשך ללובי</button>' +
-        '</div></div></div>';
-
-      return html;
-    }
-
-    function renderLobby() {
-      const myParticipant = gameState.participants.find(p => p.id === state.myId);
-      const readyCount = gameState.participants.filter(p => p.ready).length;
-
-      let html = '<div class="min-h-screen bg-gradient-to-br from-blue-500 to-indigo-600 p-4">' +
-        '<div class="max-w-2xl mx-auto">' +
-          '<div class="bg-white rounded-3xl shadow-2xl p-8">' +
-            '<div class="text-center mb-8">' +
-              '<div class="text-6xl mb-4">👥</div>' +
-              '<h2 class="text-3xl font-bold text-gray-800 mb-2">לובי הדראפט</h2>' +
-              '<p class="text-gray-600">מחכים לשחקנים...</p>' +
-            '</div>';
-
-      if (!myParticipant) {
-        html += '<div class="mb-6">' +
-          '<input type="text" id="nicknameInput" placeholder="הכנס כינוי" class="w-full p-4 border-2 border-gray-300 rounded-xl focus:border-blue-500 focus:ring-2 focus:ring-blue-200 mb-4" />' +
-          '<button onclick="handleJoinLobby()" class="w-full bg-blue-500 text-white py-4 rounded-xl font-bold hover:bg-blue-600 transition-all">הצטרף ללובי</button>' +
-        '</div>';
-      }
-
-      html += '<div class="space-y-3 mb-6">';
-      gameState.participants.forEach(p => {
-        const team = p.teamName ? gameState.teams.find(t => t.name === p.teamName) : null;
-        html += '<div class="flex items-center justify-between p-4 rounded-xl ' +
-          (p.ready ? 'bg-green-100 border-2 border-green-500' : 'bg-gray-100 border-2 border-gray-300') + '">' +
-          '<div class="flex items-center gap-3">' +
-            (team ? '<div class="w-8 h-8 rounded-full ' + TEAM_COLORS[team.name].bg + '"></div>' : '') +
-            '<div>' +
-              '<span class="font-medium block">' + p.name + '</span>' +
-              (team ? '<span class="text-xs text-gray-600">קבוצה: ' + team.name + '</span>' : '<span class="text-xs text-red-600">לא בחר קבוצה</span>') +
-            '</div>' +
-          '</div>' +
-          (p.ready ? '<span class="text-2xl">✓</span>' : '') +
-        '</div>';
-      });
-      html += '</div>';
-
-      if (myParticipant) {
-        if (!myParticipant.teamName) {
-          html += '<div class="mb-4 p-4 bg-yellow-50 border-2 border-yellow-300 rounded-xl">' +
-            '<p class="font-bold text-yellow-800 mb-3 text-center">בחר את הקבוצה שלך:</p>' +
-            '<div class="grid grid-cols-3 gap-3">';
-          
-          gameState.teams.forEach(team => {
-            const isAlreadyTaken = gameState.participants.some(p => p.teamName === team.name && p.id !== state.myId);
-            html += '<button onclick="handleSelectTeam(\'' + team.name + '\')" ' +
-              (isAlreadyTaken ? 'disabled' : '') +
-              ' class="p-4 rounded-xl transition-all ' +
-              (isAlreadyTaken ? 'bg-gray-200 opacity-50 cursor-not-allowed' : 'bg-white border-2 border-gray-300 hover:border-blue-500 hover:scale-105') + '">' +
-              '<div class="w-12 h-12 rounded-full ' + TEAM_COLORS[team.name].bg + ' mx-auto mb-2"></div>' +
-              '<p class="font-bold text-sm">' + team.name + '</p>' +
-              '<p class="text-xs text-gray-600">' + team.captain + '</p>' +
-              (isAlreadyTaken ? '<p class="text-xs text-red-600 mt-1">תפוס</p>' : '') +
-            '</button>';
-          });
-          
-          html += '</div></div>';
-        }
-
-        html += '<button onclick="handleToggleReady()" ' +
-          (!myParticipant.teamName ? 'disabled' : '') +
-          ' class="w-full py-4 rounded-xl font-bold mb-4 transition-all ' +
-          (!myParticipant.teamName ? 'bg-gray-200 text-gray-400 cursor-not-allowed' : 
-           myParticipant.ready ? 'bg-gray-300 text-gray-700' : 'bg-green-500 text-white hover:bg-green-600') + '">' +
-          (myParticipant.ready ? 'ביטול מוכן' : myParticipant.teamName ? 'אני מוכן!' : 'בחר קבוצה קודם') +
-        '</button>';
-      }
-
-      if (state.isHost && readyCount > 0) {
-        html += '<div class="border-t-2 border-gray-200 pt-6 mt-6">' +
-          '<h3 class="text-xl font-bold text-gray-800 mb-4">הגדרות דראפט</h3>' +
-          '<div class="mb-4">' +
-            '<button onclick="handleToggleManualOrder()" class="w-full py-3 rounded-xl font-medium transition-all ' +
-              (state.manualOrder ? 'bg-purple-500 text-white' : 'bg-gray-200 text-gray-700') + '">' +
-              (state.manualOrder ? '✓ סדר ידני פעיל' : 'סדר אקראי (לחץ לסדר ידני)') +
-            '</button>' +
-          '</div>';
-
-        if (state.manualOrder && state.draftOrder.length > 0) {
-          html += '<div class="bg-gray-50 rounded-xl p-4 mb-4">' +
-            '<div class="flex items-center justify-between mb-3">' +
-              '<h4 class="font-bold text-gray-700">סדר הקבוצות:</h4>' +
-              '<button onclick="handleRandomizeDraftOrder()" class="text-sm bg-purple-100 text-purple-700 px-3 py-1 rounded-lg hover:bg-purple-200">🔀 ערבב</button>' +
-            '</div>' +
-            '<p class="text-xs text-gray-500 mb-3">הסדר יהפוך כל סיבוב (snake draft)</p>' +
-            '<div class="space-y-2">';
-
-          state.draftOrder.forEach((teamName, index) => {
-            const team = gameState.teams.find(t => t.name === teamName);
-            if (team) {
-              html += '<div class="flex items-center gap-2 bg-white p-3 rounded-lg">' +
-                '<span class="font-bold text-lg text-gray-500 w-8">' + (index + 1) + '.</span>' +
-                '<div class="w-8 h-8 rounded-full ' + TEAM_COLORS[teamName].bg + '"></div>' +
-                '<div class="flex-1">' +
-                  '<span class="font-bold">' + teamName + '</span>' +
-                  '<span class="text-sm text-gray-500 mr-2">(' + team.captain + ')</span>' +
-                '</div>' +
-                '<div class="flex gap-1">' +
-                  '<button onclick="handleMoveDraftOrder(\'' + teamName + '\', -1)" ' +
-                    (index === 0 ? 'disabled' : '') +
-                    ' class="w-8 h-8 bg-gray-200 rounded hover:bg-gray-300 disabled:opacity-30 disabled:cursor-not-allowed">↑</button>' +
-                  '<button onclick="handleMoveDraftOrder(\'' + teamName + '\', 1)" ' +
-                    (index === state.draftOrder.length - 1 ? 'disabled' : '') +
-                    ' class="w-8 h-8 bg-gray-200 rounded hover:bg-gray-300 disabled:opacity-30 disabled:cursor-not-allowed">↓</button>' +
-                '</div>' +
-              '</div>';
-            }
-          });
-
-          html += '</div></div>';
-        }
-
-        html += '</div>';
-      }
-
-      if (state.isHost) {
-        html += '<button onclick="handleStartDraft()" ' +
-          (readyCount === 0 ? 'disabled' : '') +
-          ' class="w-full bg-gradient-to-r from-orange-500 to-red-600 text-white py-4 rounded-xl font-bold text-lg hover:from-orange-600 hover:to-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2">▶️ התחל דראפט (' + readyCount + ' מוכנים)</button>';
-      }
-
-      html += '</div></div></div>';
-      return html;
-    }
-
-    function renderDrafting() {
-      const turnInfo = getCurrentTurnInfo();
-      
-      let html = '<div class="min-h-screen bg-gradient-to-br from-green-600 to-teal-600 p-4">' +
-        '<div class="max-w-6xl mx-auto">';
-
-      if (turnInfo) {
-        html += '<div class="mb-6 p-6 rounded-3xl shadow-xl ' +
-          (turnInfo.isMyTurn ? 'bg-yellow-400 animate-pulse' : 'bg-white') + '">' +
-          '<div class="text-center">' +
-            '<p class="text-2xl font-bold mb-2">' +
-              (turnInfo.isMyTurn ? '🔥 התור שלך לבחור! 🔥' : '⏳ התור של: ' + turnInfo.captain) +
-            '</p>' +
-            '<p class="text-lg text-gray-700 font-medium">קבוצה: <span class="font-bold">' + turnInfo.team.name + '</span></p>' +
-          '</div>' +
-        '</div>';
-      }
-
-      if (gameState.pendingPick) {
-        html += '<div class="mb-6 p-6 rounded-2xl bg-orange-100 border-4 border-orange-400 shadow-xl">' +
-          '<div class="text-center">' +
-            '<p class="text-lg font-bold text-orange-800 mb-3">✓ נבחר: ' + gameState.pendingPick.playerName + '</p>' +
-            '<div class="flex gap-3 justify-center">' +
-              '<button onclick="handleConfirmPick()" class="bg-green-500 text-white px-8 py-3 rounded-xl font-bold hover:bg-green-600 transition-all">✓ סיימתי - עבור לתור הבא</button>' +
-              '<button onclick="handleCancelPendingPick()" class="bg-gray-400 text-white px-6 py-3 rounded-xl font-bold hover:bg-gray-500 transition-all">✗ בטל בחירה</button>' +
-            '</div>' +
-          '</div>' +
-        '</div>';
-      }
-
-      html += '<div class="bg-white rounded-3xl shadow-2xl p-6 mb-6">' +
-        '<div class="flex items-center justify-between mb-4">' +
-          '<h3 class="text-2xl font-bold text-gray-800">שחקנים זמינים</h3>';
-      
-      if (state.isHost && gameState.lastPick) {
-        html += '<button onclick="handleUndoPick()" class="bg-red-100 text-red-700 px-4 py-2 rounded-lg font-bold hover:bg-red-200 transition-all">↶ אחורה</button>';
-      }
-      
-      html += '</div>' +
-        '<div class="grid grid-cols-2 md:grid-cols-4 gap-3">';
-
-      gameState.players.filter(p => p.available).forEach(player => {
-        const canPick = turnInfo && turnInfo.isMyTurn && !gameState.pendingPick;
-        const isPending = gameState.pendingPick && gameState.pendingPick.playerId === player.id;
-        html += '<button onclick="handleMakePick(\'' + player.id + '\')" ' +
-          (!canPick ? 'disabled' : '') +
-          ' class="p-4 rounded-xl border-2 transition-all ' +
-          (isPending ? 'bg-orange-400 text-white border-orange-600 scale-105 animate-pulse' : 
-           canPick ? 'bg-gradient-to-br from-blue-400 to-purple-500 text-white border-purple-600 hover:scale-105 cursor-pointer' : 
-           'bg-gray-100 text-gray-500 border-gray-300 cursor-not-allowed') +
-          '">' + player.name + '</button>';
-      });
-
-      html += '</div></div><div class="grid md:grid-cols-3 gap-4 mb-6">';
-
-      gameState.teams.forEach(team => {
-        html += '<div class="bg-white rounded-3xl shadow-xl p-6">' +
-          '<div class="w-12 h-12 rounded-full ' + TEAM_COLORS[team.name].bg + ' mx-auto mb-3"></div>' +
-          '<h3 class="text-xl font-bold text-center mb-2">' + team.name + '</h3>' +
-          '<p class="text-sm text-gray-600 text-center mb-4">קפטן: ' + team.captain + '</p>' +
-          '<div class="space-y-2">';
-        
-        team.players.forEach(player => {
-          html += '<div class="bg-gray-100 p-2 rounded-lg text-center text-sm">' + player + '</div>';
-        });
-        
-        html += '</div></div>';
-      });
-
-      html += '</div>';
-
-      if (state.isHost) {
-        html += '<button onclick="handleResetDraft()" class="w-full bg-red-500 text-white py-3 rounded-xl font-bold hover:bg-red-600 transition-all flex items-center justify-center gap-2">🔄 אפס דראפט</button>';
-      }
-
-      html += '</div></div>';
-      return html;
-    }
-
-    function renderCompleted() {
-      let html = '<div class="min-h-screen bg-gradient-to-br from-yellow-400 to-orange-500 p-4">' +
-        '<div class="max-w-4xl mx-auto">' +
-          '<div class="bg-white rounded-3xl shadow-2xl p-8 mb-6">' +
-            '<div class="text-center mb-8">' +
-              '<div class="text-7xl mb-4 animate-bounce">🏆</div>' +
-              '<h2 class="text-4xl font-bold text-gray-800 mb-2">הדראפט הסתיים!</h2>' +
-              '<p class="text-gray-600">הנה הקבוצות שלכם</p>' +
-            '</div>' +
-            '<div class="grid md:grid-cols-3 gap-6 mb-8">';
-
-      gameState.teams.forEach(team => {
-        html += '<div class="bg-gradient-to-br from-gray-50 to-gray-100 rounded-2xl p-6 border-4 border-gray-300">' +
-          '<div class="w-16 h-16 rounded-full ' + TEAM_COLORS[team.name].bg + ' mx-auto mb-4"></div>' +
-          '<h3 class="text-2xl font-bold text-center mb-3">' + team.name + '</h3>' +
-          '<div class="bg-yellow-100 border-2 border-yellow-400 rounded-lg p-3 mb-4">' +
-            '<p class="text-center font-bold text-yellow-800">👑 ' + team.captain + '</p>' +
-          '</div>' +
-          '<div class="space-y-2">';
-        
-        team.players.filter(p => p !== team.captain).forEach(player => {
-          html += '<div class="bg-white p-3 rounded-lg text-center border border-gray-200">' + player + '</div>';
-        });
-        
-        html += '</div></div>';
-      });
-
-      html += '</div><div class="space-y-4">' +
-        '<button onclick="handleShareWhatsApp()" class="w-full bg-green-500 text-white py-4 rounded-xl font-bold text-lg hover:bg-green-600 transition-all flex items-center justify-center gap-2">📤 שתף בוואטסאפ</button>';
-
-      if (state.isHost) {
-        html += '<button onclick="handleResetDraft()" class="w-full bg-gray-500 text-white py-3 rounded-xl font-bold hover:bg-gray-600 transition-all flex items-center justify-center gap-2">🔄 התחל דראפט חדש</button>';
-      }
-
-      html += '</div></div></div></div>';
-      return html;
-    }
-
-    window.handleInitGame = function() {
-      state.playerInput = document.getElementById('playerInput').value;
-      initializeGame();
-    };
-
-    window.handleToggleCaptain = function(playerId) {
-      toggleCaptain(playerId);
-    };
-
-    window.handleRandomCaptains = function() {
-      selectCaptainsRandomly();
-    };
-
-    window.handleAssignTeam = function(captainId, color) {
-      assignTeam(captainId, color);
-    };
-
-    window.handleFinalizeCaptains = function() {
-      finalizeCaptains();
-    };
-
-    window.handleJoinLobby = function() {
-      state.nickname = document.getElementById('nicknameInput').value;
-      joinLobby();
-    };
-
-    window.handleToggleReady = function() {
-      toggleReady();
-    };
-
-    window.handleStartDraft = function() {
-      startDraft();
-    };
-
-    window.handleMakePick = function(playerId) {
-      makePick(playerId);
-    };
-
-    window.handleResetDraft = function() {
-      resetDraft();
-    };
-
-    window.handleShareWhatsApp = function() {
-      shareOnWhatsApp();
-    };
-
-    window.handleToggleManualOrder = function() {
-      toggleManualOrder();
-    };
-
-    window.handleMoveDraftOrder = function(participantId, direction) {
-      moveDraftOrder(participantId, direction);
-    };
-
-    window.handleRandomizeDraftOrder = function() {
-      randomizeDraftOrder();
-    };
-
-    window.handleConfirmPick = function() {
-      confirmPick();
-    };
-
-    window.handleUndoPick = function() {
-      undoPick();
-    };
-
-    window.handleCancelPendingPick = function() {
-      cancelPendingPick();
-    };
-
-    window.handleSelectTeam = function(teamName) {
-      selectTeam(teamName);
-    };
-
-    init();
-  </script>
-</body>
-</html>
+init();
