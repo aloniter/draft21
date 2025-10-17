@@ -315,9 +315,9 @@
     const otherPlayers = t.players.filter(p => p !== captain);
     const shuffled = otherPlayers.sort(() => Math.random() - 0.5);
     
-    msg += emoji + emoji + emoji + ' קבוצה ' + t.name + ' ' + emoji + emoji + emoji + '\n';
-    msg += '👑 קפטן: ' + captain + '\n';
-    msg += '👥 שחקנים: ' + shuffled.join(', ') + '\n\n';
+    msg += emoji + emoji + emoji + '\n';
+    msg += captain + '\n';
+    msg += shuffled.join('\n') + '\n\n';
   });
   
   msg += '━━━━━━━━━━━━━━\n';
