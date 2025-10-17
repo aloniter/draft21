@@ -301,15 +301,14 @@
         teams:gd.teams.map(t => ({...t,players:[t.captain]}))
       });
     }
-
-    async function shareWA() {
+async function shareWA() {
   const snap = await getDoc(doc(db,'games','current'));
   if (!snap.exists()) return;
   const gd = snap.data();
-  let msg = '⚽🏆 תוצאות הדראפט 🏆⚽\n\n';
+  let msg = '⚽🔥 *רביעי שמח, 20:30 כבר כדור ראשון באוויר* ⚽🔥\n\n';
   
   gd.teams.forEach(t => {
-    const emoji = t.name==='Red'?'🟥':t.name==='White'?'⬜':'⬛';
+    const emoji = t.name==='Red'?'🔴':t.name==='White'?'⚪':'⚫';
     
     const captain = t.captain;
     const otherPlayers = t.players.filter(p => p !== captain);
@@ -321,11 +320,10 @@
   });
   
   msg += '━━━━━━━━━━━━━━\n';
-  msg += '⚽ בהצלחה לכולם! ⚽';
+  msg += 'בהצלחה לכולם!';
   
   window.open('https://wa.me/?text='+encodeURIComponent(msg), '_blank');
 }
-
     function showConf() {
       for (let i = 0; i < 50; i++) {
         setTimeout(() => {
