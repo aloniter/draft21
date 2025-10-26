@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Draft21</title>
+  
+  <!-- 📱 אייקונים לשמירה ב-Home Screen -->
+  <link rel="icon" type="image/png" href="draft21icon.png">
+  <link rel="apple-touch-icon" href="draft21icon.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="draft21icon.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="draft21icon.png">
+  <link rel="icon" type="image/png" sizes="512x512" href="draft21icon.png">
+  
+  <!-- PWA - שם האפליקציה בהום סקרין -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Draft21">
+  <meta name="application-name" content="Draft21">
+  <meta name="theme-color" content="#3b82f6">
+  
+  <script src="https://cdn.tailwindcss.com"></script>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Draft21 - כלי דראפט כדורגל</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    @keyframes bounce { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-20px); } }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+    @keyframes fall { to { transform: translateY(100vh) rotate(360deg); opacity: 0; } }
+    .animate-bounce { animation: bounce 1s infinite; }
+    .animate-pulse { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+    .confetti { position: fixed; animation: fall 3s linear; pointer-events: none; font-size: 24px; z-index: 9999; }
+  </style>
+</head>
+<body class="min-h-screen">
+  <div id="app">
+    <div class="min-h-screen bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center p-4">
+      <div class="bg-white rounded-3xl shadow-2xl p-8 text-center">
+        <div class="text-6xl mb-4 animate-bounce">🏆</div>
+        <h1 class="text-3xl font-bold text-gray-800 mb-2">Draft21</h1>
+        <div class="animate-pulse text-gray-600">טוען את המערכת...</div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
+    import { getFirestore, doc, onSnapshot, setDoc, updateDoc, runTransaction, getDoc } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js';
+
+    const app = initializeApp({
+      apiKey: "AIzaSyBqz4oHoqGtnzjWqgzjWmwsUv6Kny75QpM",
+      authDomain: "draft21-eabc3.firebaseapp.com",
+      projectId: "draft21-eabc3",
+      storageBucket: "draft21-eabc3.firebasestorage.app",
+      messagingSenderId: "489648686113",
+      appId: "1:489648686113:web:94d3605a0e5a871a434f60",
+    });
+
+    const db = getFirestore(app);
+    const COLORS = { Red: 'bg-red-500', White: 'bg-gray-100', Black: 'bg-gray-900' };
+    
+    let S = {
+      phase: 'setup', input: '', nick: '', id: '', host: false,
+      caps: [], assigns: {}, order: [], manual: false
+    };
+
+    function init() {
+      const n = localStorage.getItem('d21_nick');
+      const i = localStorage.getItem('d21_id');
+      if (n) S.nick = n;
+      if (i) S.id = i;
+      if (localStorage.getItem('d21_host') === '1') S.host = true;
+      try {
+        const c = localStorage.getItem('d21_caps');
+        const a = localStorage.getItem('d21_assign');
+        if (c) S.caps = JSON.parse(c);
+        if (a) S.assigns = JSON.parse(a);
+      } catch (e) {}
+      
+      onSnapshot(doc(db, 'games', 'current'), snap => {
+        if (snap.exists()) S.phase = snap.data().status || 'setup';
+        render();
+      });
+    }
+
+    function clean(t) {
+      return t.split('\n').map(l => l.trim().replace(/^\d+[\.\)\-\s]+/,'').replace(/[\d\.\)\-]+$/,'').replace(/\d+/g,'').trim()).filter(n => n.length > 0).slice(0,21);
+    }
+
+    async function initGame() {
+      const names = clean(S.input);
+      if (!names.length) return;
+      const plrs = names.map((n,i) => ({id:'p'+i, name:n, available:true}));
+      await setDoc(doc(db,'games','current'), {
+        status:'captains', players:plrs, teams:[], participants:[], picks:[],
+        turn:{order:[],index:0,direction:1}, settings:{snake:true}, pendingPick:null, lastPick:null
+      });
+      S.host = true;
+      localStorage.setItem('d21_host','1');
+    }
+
+    function togCap(id) {
+      const i = S.caps.indexOf(id);
+      if (i > -1) S.caps.splice(i,1);
+      else if (S.caps.length < 3) S.caps.push(id);
+      localStorage.setItem('d21_caps', JSON.stringify(S.caps));
+      render();
+    }
+
+    async function randCaps() {
+      const snap = await getDoc(doc(db,'games','current'));
+      if (!snap.exists()) return;
+      const av = snap.data().players.filter(p => p.available);
+      const sh = av.slice().sort(() => Math.random()-.5);
+      S.caps = sh.slice(0,3).map(p => p.id);
+      const cols = ['Red','White','Black'];
+      S.assigns = {};
+      S.caps.forEach((c,i) => S.assigns[c] = cols[i]);
+      localStorage.setItem('d21_caps', JSON.stringify(S.caps));
+      localStorage.setItem('d21_assign', JSON.stringify(S.assigns));
+      render();
+    }
+
+    function assignT(cid, col) {
+      S.assigns[cid] = col;
+      localStorage.setItem('d21_assign', JSON.stringify(S.assigns));
+      render();
+    }
+
+    async function finCaps() {
+      if (S.caps.length !== 3 || Object.keys(S.assigns).length !== 3) return;
+      const snap = await getDoc(doc(db,'games','current'));
+      if (!snap.exists()) return;
+      const gd = snap.data();
+      const tms = S.caps.map(cid => {
+        const cap = gd.players.find(p => p.id === cid);
+        return {name:S.assigns[cid], captain:cap.name, captainId:cid, players:[cap.name]};
+      });
+      const up = gd.players.map(p => ({...p, available:!S.caps.includes(p.id)}));
+      await updateDoc(doc(db,'games','current'), {teams:tms, players:up, status:'lobby'});
+    }
+
+    async function joinLob() {
+      if (!S.nick.trim()) return;
+      const pid = S.id || 'p'+Date.now();
+      S.id = pid;
+      localStorage.setItem('d21_nick', S.nick);
+      localStorage.setItem('d21_id', pid);
+      await runTransaction(db, async t => {
+        const snap = await t.get(doc(db,'games','current'));
+        if (!snap.exists()) return;
+        const gd = snap.data();
+        const mt = gd.teams.find(tm => tm.captain.toLowerCase() === S.nick.trim().toLowerCase());
+        const part = {id:pid, name:S.nick, ready:false, teamName:mt ? mt.name : null};
+        if (!gd.participants.some(p => p.id === pid)) {
+          t.update(doc(db,'games','current'), {participants:[...gd.participants, part]});
+        }
+      });
+    }
+
+    async function selTeam(tn) {
+      await runTransaction(db, async t => {
+        const snap = await t.get(doc(db,'games','current'));
+        if (!snap.exists()) return;
+        const gd = snap.data();
+        const up = gd.participants.map(p => p.id === S.id ? {...p, teamName:tn} : p);
+        t.update(doc(db,'games','current'), {participants:up});
+      });
+    }
+
+    async function togReady() {
+      await runTransaction(db, async t => {
+        const snap = await t.get(doc(db,'games','current'));
+        if (!snap.exists()) return;
+        const gd = snap.data();
+        const my = gd.participants.find(p => p.id === S.id);
+        if (!my || !my.teamName) return;
+        const up = gd.participants.map(p => p.id === S.id ? {...p, ready:!p.ready} : p);
+        t.update(doc(db,'games','current'), {participants:up});
+      });
+    }
+
+    function togMan() {
+      S.manual = !S.manual;
+      if (!S.manual) S.order = [];
+      else {
+        getDoc(doc(db,'games','current')).then(snap => {
+          if (snap.exists()) {
+            S.order = snap.data().teams.map(t => t.name);
+            render();
+          }
+        });
+      }
+      render();
+    }
+
+    function moveO(tn, dir) {
+      const ci = S.order.indexOf(tn);
+      if (ci === -1) return;
+      const ni = ci + dir;
+      if (ni < 0 || ni >= S.order.length) return;
+      [S.order[ci], S.order[ni]] = [S.order[ni], S.order[ci]];
+      render();
+    }
+
+    function randO() {
+      S.order = S.order.slice().sort(() => Math.random()-.5);
+      render();
+    }
+
+    async function startD() {
+      const snap = await getDoc(doc(db,'games','current'));
+      if (!snap.exists()) return;
+      const gd = snap.data();
+      const parts = gd.participants.filter(p => p.ready);
+      if (!parts.length) return;
+      const trep = new Set(parts.map(p => p.teamName));
+      if (trep.size !== gd.teams.length) { alert('כל קבוצה צריכה משתתף!'); return; }
+      const ac = gd.players.filter(p => p.available).length;
+      const tc = gd.teams.length;
+      const rnds = Math.ceil(ac/tc);
+      let ord = [];
+      const tns = gd.teams.map(t => t.name);
+      if (S.manual && S.order.length === tc) {
+        for (let r = 0; r < rnds; r++) ord = ord.concat(r%2===0 ? S.order : S.order.slice().reverse());
+      } else {
+        for (let r = 0; r < rnds; r++) ord = ord.concat(r%2===0 ? tns : tns.slice().reverse());
+      }
+      await updateDoc(doc(db,'games','current'), {
+        status:'drafting', turn:{order:ord,index:0,direction:1}, pendingPick:null, lastPick:null
+      });
+    }
+
+    async function makePk(pid) {
+      await runTransaction(db, async t => {
+        const snap = await t.get(doc(db,'games','current'));
+        if (!snap.exists()) return;
+        const gd = snap.data();
+        const ctn = gd.turn.order[gd.turn.index];
+        const my = gd.participants.find(p => p.id === S.id);
+        if (!my || my.teamName !== ctn) return;
+        const pl = gd.players.find(p => p.id === pid);
+        if (!pl || !pl.available) return;
+        t.update(doc(db,'games','current'), {pendingPick:{playerId:pid,playerName:pl.name,teamName:ctn}});
+      });
+    }
+
+    async function confPk() {
+      await runTransaction(db, async t => {
+        const snap = await t.get(doc(db,'games','current'));
+        if (!snap.exists()) return;
+        const gd = snap.data();
+        if (!gd.pendingPick) return;
+        const pl = gd.players.find(p => p.id === gd.pendingPick.playerId);
+        const ctn = gd.pendingPick.teamName;
+        const tm = gd.teams.find(t => t.name === ctn);
+        const upp = gd.players.map(p => p.id === gd.pendingPick.playerId ? {...p,available:false} : p);
+        const upt = gd.teams.map(t => t.name === tm.name ? {...t,players:[...t.players,pl.name]} : t);
+        const pk = {playerId:gd.pendingPick.playerId, playerName:pl.name, team:tm.name, pickNumber:gd.picks.length+1, timestamp:Date.now()};
+        const lp = {playerId:pk.playerId, playerName:pk.playerName, teamName:pk.team, turnIndex:gd.turn.index};
+        const ni = gd.turn.index + 1;
+        const ap = upp.filter(p => p.available).length === 0;
+        t.update(doc(db,'games','current'), {
+          players:upp, teams:upt, picks:[...gd.picks,pk], pendingPick:null, lastPick:lp,
+          turn:{...gd.turn,index:ni}, status:ap?'completed':'drafting'
+        });
+      });
+      showConf();
+    }
+
+    async function undoPk() {
+      await runTransaction(db, async t => {
+        const snap = await t.get(doc(db,'games','current'));
+        if (!snap.exists()) return;
+        const gd = snap.data();
+        if (!gd.lastPick || !gd.picks.length) return;
+        const lp = gd.lastPick;
+        const upp = gd.players.map(p => p.id === lp.playerId ? {...p,available:true} : p);
+        const upt = gd.teams.map(t => t.name === lp.teamName ? {...t,players:t.players.filter(p => p !== lp.playerName)} : t);
+        const upk = gd.picks.slice(0,-1);
+        const nlp = upk.length > 0 ? {playerId:upk[upk.length-1].playerId,playerName:upk[upk.length-1].playerName,teamName:upk[upk.length-1].team,turnIndex:lp.turnIndex-1} : null;
+        t.update(doc(db,'games','current'), {
+          players:upp, teams:upt, picks:upk, turn:{...gd.turn,index:lp.turnIndex},
+          pendingPick:null, lastPick:nlp, status:gd.status==='completed'?'drafting':gd.status
+        });
+      });
+    }
+
+    async function canPend() {
+      await updateDoc(doc(db,'games','current'), {pendingPick:null});
+    }
+
+    async function rstDraft() {
+      const snap = await getDoc(doc(db,'games','current'));
+      if (!snap.exists()) return;
+      const gd = snap.data();
+      await updateDoc(doc(db,'games','current'), {
+        picks:[], turn:{order:gd.turn.order,index:0,direction:1}, status:'drafting', pendingPick:null, lastPick:null,
+        players:gd.players.map(p => ({...p,available:!S.caps.includes(p.id)})),
+        teams:gd.teams.map(t => ({...t,players:[t.captain]}))
+      });
+    }
+async function shareWA() {
+  const snap = await getDoc(doc(db,'games','current'));
+  if (!snap.exists()) return;
+  const gd = snap.data();
+  let msg = '⚽🔥 *רביעי שמח, 20:30 כבר כדור ראשון באוויר* ⚽🔥\n\n';
+  
+  gd.teams.forEach(t => {
+    const emoji = t.name==='Red'?'🔴':t.name==='White'?'⚪':'⚫';
+    
+    const captain = t.captain;
+    const otherPlayers = t.players.filter(p => p !== captain);
+    const shuffled = otherPlayers.sort(() => Math.random() - 0.5);
+    
+    msg += emoji + emoji + emoji + '\n';
+    msg += captain + '\n';
+    msg += shuffled.join('\n') + '\n\n';
+  });
+  
+  msg += '━━━━━━━━━━━━━━\n';
+  msg += 'בהצלחה לכולם!';
+  
+  window.open('https://wa.me/?text='+encodeURIComponent(msg), '_blank');
+}
+    function showConf() {
+      for (let i = 0; i < 50; i++) {
+        setTimeout(() => {
+          const c = document.createElement('div');
+          c.className = 'confetti';
+          c.textContent = ['🎉','⚽','🏆','✨','🎊'][Math.floor(Math.random()*5)];
+          c.style.left = Math.random()*100 + '%';
+          c.style.top = '-50px';
+          document.body.appendChild(c);
+          setTimeout(() => c.remove(), 3000);
+        }, i*50);
+      }
+    }
+
+    async function fullRst() {
+      if (!confirm('מחיקה מוחלטת מכל המכשירים?')) return;
+      localStorage.clear();
+      await setDoc(doc(db,'games','current'), {
+        status:'setup', players:[], teams:[], participants:[], picks:[],
+        turn:{order:[],index:0,direction:1}, settings:{snake:true}, pendingPick:null, lastPick:null
+      });
+      S = {phase:'setup', input:'', nick:'', id:'', host:false, caps:[], assigns:{}, order:[], manual:false};
+    }
+
+    function getTurn(gd) {
+      if (!gd || S.phase !== 'drafting') return null;
+      const ctn = gd.turn.order[gd.turn.index];
+      const tm = gd.teams.find(t => t.name === ctn);
+      const my = gd.participants.find(p => p.id === S.id);
+      return {team:tm, captain:tm.captain, isMyTurn:my && my.teamName === ctn};
+    }
+
+    function render() {
+      getDoc(doc(db,'games','current')).then(snap => {
+        const gd = snap.exists() ? snap.data() : null;
+        const a = document.getElementById('app');
+        if (S.phase === 'setup' || !gd || !gd.players.length) a.innerHTML = rSetup();
+        else if (S.phase === 'captains') a.innerHTML = rCaps(gd);
+        else if (S.phase === 'lobby') a.innerHTML = rLobby(gd);
+        else if (S.phase === 'drafting') a.innerHTML = rDraft(gd);
+        else if (S.phase === 'completed') a.innerHTML = rComp(gd);
+      });
+    }
+
+    function rSetup() {
+      return '<div class="min-h-screen bg-gradient-to-br from-green-500 to-blue-600 p-4 flex items-center justify-center">'+
+        '<div class="bg-white rounded-3xl shadow-2xl p-8 max-w-md w-full"><div class="text-center mb-6">'+
+        '<div class="text-6xl mb-4">🏆</div><h1 class="text-4xl font-bold text-gray-800">Draft21</h1>'+
+        '<p class="text-gray-600 mt-2">דראפט כדורגל בזמן אמת</p>'+
+        '<div class="mt-2 inline-flex items-center gap-2 text-xs text-green-600 bg-green-50 px-3 py-1 rounded-full">'+
+        '<div class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>🌐 עובד בין כל המכשירים</div></div>'+
+        '<div class="space-y-4"><div><label class="block text-sm font-medium text-gray-700 mb-2">הדבק רשימת שחקנים (עד 21)</label>'+
+        '<textarea id="inp" placeholder="1. דוד\n2. יואב\n3. אלון" class="w-full h-48 p-3 border-2 border-gray-300 rounded-lg"></textarea></div>'+
+        '<button onclick="hInitG()" class="w-full bg-gradient-to-r from-blue-500 to-purple-600 text-white py-4 rounded-xl font-bold text-lg hover:from-blue-600 hover:to-purple-700">התחל הגדרת דראפט</button>'+
+        '<button onclick="hFullR()" class="w-full bg-red-100 text-red-700 py-2 rounded-lg text-sm hover:bg-red-200">🔄 איפוס מלא</button></div></div></div>';
+    }
+
+    function rCaps(gd) {
+      const sc = S.caps.length;
+      const ac = Object.keys(S.assigns).length;
+      let h = '<div class="min-h-screen bg-gradient-to-br from-purple-500 to-pink-600 p-4"><div class="max-w-4xl mx-auto">'+
+        '<div class="bg-white rounded-3xl shadow-2xl p-8 mb-6"><h2 class="text-3xl font-bold mb-2">בחר 3 קפטנים</h2>'+
+        '<p class="text-gray-600 mb-6">לחץ על שחקנים או הגרל</p><div class="flex gap-4 mb-6">'+
+        '<button onclick="hRandC()" class="bg-purple-500 text-white px-6 py-3 rounded-xl hover:bg-purple-600">🔀 הגרל קפטנים וקבוצות</button></div>'+
+        '<div class="grid grid-cols-2 md:grid-cols-3 gap-3 mb-6">';
+      gd.players.filter(p => p.available).forEach(pl => {
+        const sel = S.caps.includes(pl.id);
+        h += '<button onclick="hTogC(\''+pl.id+'\')" class="p-4 rounded-xl border-2 '+(sel?'bg-blue-500 text-white border-blue-600 scale-105':'bg-gray-50 border-gray-300 hover:border-blue-400')+'">'+pl.name+'</button>';
+      });
+      h += '</div>';
+      if (sc === 3) {
+        h += '<div class="space-y-4 mb-6"><h3 class="text-xl font-bold mb-4">הקצה צבעי חולצות</h3>';
+        S.caps.forEach(cid => {
+          const cap = gd.players.find(p => p.id === cid);
+          const asn = S.assigns[cid];
+          h += '<div class="flex items-center gap-4 bg-gray-50 p-4 rounded-xl"><span class="font-bold w-32">'+cap.name+'</span>';
+          if (asn) h += '<span class="text-sm text-gray-600">→</span><div class="flex items-center gap-2"><div class="w-8 h-8 rounded-full '+COLORS[asn]+'"></div><span class="font-medium">'+asn+'</span></div>';
+          h += '<div class="flex gap-2 mr-auto">';
+          Object.keys(COLORS).forEach(col => {
+            const isA = S.assigns[cid] === col;
+            const isU = Object.values(S.assigns).includes(col) && !isA;
+            h += '<button onclick="hAssT(\''+cid+'\',\''+col+'\')" '+(isU?'disabled':'')+' class="w-16 h-16 rounded-full border-4 '+COLORS[col]+' '+(isA?'border-yellow-400 scale-110 shadow-lg':'border-gray-300 opacity-50')+' '+(isU?'opacity-30 cursor-not-allowed':'hover:scale-105')+'"></button>';
+          });
+          h += '</div></div>';
+        });
+        h += '</div>';
+      }
+      h += '<button onclick="hFinC()" '+(sc!==3||ac!==3?'disabled':'')+' class="w-full bg-gradient-to-r from-green-500 to-teal-600 text-white py-4 rounded-xl font-bold disabled:opacity-50">המשך ללובי</button></div></div></div>';
+      return h;
+    }
+
+    function rLobby(gd) {
+      const my = gd.participants.find(p => p.id === S.id);
+      const rc = gd.participants.filter(p => p.ready).length;
+      let h = '<div class="min-h-screen bg-gradient-to-br from-blue-500 to-indigo-600 p-4"><div class="max-w-2xl mx-auto">'+
+        '<div class="bg-white rounded-3xl shadow-2xl p-8"><div class="text-center mb-8"><div class="text-6xl mb-4">👥</div>'+
+        '<h2 class="text-3xl font-bold mb-2">לובי הדראפט</h2><p class="text-gray-600">מחכים לשחקנים...</p>'+
+        '<div class="mt-2 inline-flex items-center gap-2 text-xs text-green-600 bg-green-50 px-3 py-1 rounded-full">'+
+        '<div class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>מסונכרן בזמן אמת</div></div>';
+      if (!my) {
+        h += '<div class="mb-6"><input id="nickIn" placeholder="הכנס כינוי" class="w-full p-4 border-2 rounded-xl mb-4" />'+
+          '<button onclick="hJoinL()" class="w-full bg-blue-500 text-white py-4 rounded-xl font-bold hover:bg-blue-600">הצטרף ללובי</button></div>';
+      }
+      h += '<div class="space-y-3 mb-6">';
+      gd.participants.forEach(p => {
+        const tm = p.teamName ? gd.teams.find(t => t.name === p.teamName) : null;
+        h += '<div class="flex items-center justify-between p-4 rounded-xl '+(p.ready?'bg-green-100 border-2 border-green-500':'bg-gray-100 border-2 border-gray-300')+'">'+
+          '<div class="flex items-center gap-3">'+(tm?'<div class="w-8 h-8 rounded-full '+COLORS[tm.name]+'"></div>':'')+
+          '<div><span class="font-medium block">'+p.name+'</span>'+(tm?'<span class="text-xs text-gray-600">קבוצה: '+tm.name+'</span>':'<span class="text-xs text-red-600">לא בחר קבוצה</span>')+
+          '</div></div>'+(p.ready?'<span class="text-2xl">✓</span>':'')+'</div>';
+      });
+      h += '</div>';
+      if (my) {
+        if (!my.teamName) {
+          h += '<div class="mb-4 p-4 bg-yellow-50 border-2 border-yellow-300 rounded-xl">'+
+            '<p class="font-bold text-yellow-800 mb-3 text-center">בחר את הקבוצה שלך:</p><div class="grid grid-cols-3 gap-3">';
+          gd.teams.forEach(t => {
+            const taken = gd.participants.some(p => p.teamName === t.name && p.id !== S.id);
+            h += '<button onclick="hSelT(\''+t.name+'\')" '+(taken?'disabled':'')+' class="p-4 rounded-xl '+(taken?'bg-gray-200 opacity-50 cursor-not-allowed':'bg-white border-2 border-gray-300 hover:border-blue-500')+'">'+
+              '<div class="w-12 h-12 rounded-full '+COLORS[t.name]+' mx-auto mb-2"></div>'+
+              '<p class="font-bold text-sm">'+t.name+'</p><p class="text-xs text-gray-600">'+t.captain+'</p>'+(taken?'<p class="text-xs text-red-600 mt-1">תפוס</p>':'')+'</button>';
+          });
+          h += '</div></div>';
+        }
+        h += '<button onclick="hTogR()" '+(!my.teamName?'disabled':'')+' class="w-full py-4 rounded-xl font-bold mb-4 '+(!my.teamName?'bg-gray-200 text-gray-400 cursor-not-allowed':my.ready?'bg-gray-300 text-gray-700':'bg-green-500 text-white hover:bg-green-600')+'">'+(my.ready?'ביטול מוכן':my.teamName?'אני מוכן!':'בחר קבוצה קודם')+'</button>';
+      }
+      if (S.host && rc > 0) {
+        h += '<div class="border-t-2 pt-6 mt-6"><h3 class="text-xl font-bold mb-4">הגדרות דראפט</h3><div class="mb-4">'+
+          '<button onclick="hTogMan()" class="w-full py-3 rounded-xl font-medium '+(S.manual?'bg-purple-500 text-white':'bg-gray-200 text-gray-700')+'">'+(S.manual?'✓ סדר ידני פעיל':'סדר אקראי (לחץ לסדר ידני)')+'</button></div>';
+        if (S.manual && S.order.length > 0) {
+          h += '<div class="bg-gray-50 rounded-xl p-4 mb-4"><div class="flex items-center justify-between mb-3">'+
+            '<h4 class="font-bold text-gray-700">סדר הקבוצות:</h4>'+
+            '<button onclick="hRandO()" class="text-sm bg-purple-100 text-purple-700 px-3 py-1 rounded-lg hover:bg-purple-200">🔀 ערבב</button></div>'+
+            '<p class="text-xs text-gray-500 mb-3">הסדר יהפוך כל סיבוב</p><div class="space-y-2">';
+          S.order.forEach((tn,idx) => {
+            const tm = gd.teams.find(t => t.name === tn);
+            if (tm) {
+              h += '<div class="flex items-center gap-2 bg-white p-3 rounded-lg"><span class="font-bold text-lg text-gray-500 w-8">'+(idx+1)+'.</span>'+
+                '<div class="w-8 h-8 rounded-full '+COLORS[tn]+'"></div><div class="flex-1">'+
+                '<span class="font-bold">'+tn+'</span><span class="text-sm text-gray-500 mr-2">('+tm.captain+')</span></div>'+
+                '<div class="flex gap-1"><button onclick="hMoveO(\''+tn+'\',-1)" '+(idx===0?'disabled':'')+' class="w-8 h-8 bg-gray-200 rounded hover:bg-gray-300 disabled:opacity-30">↑</button>'+
+                '<button onclick="hMoveO(\''+tn+'\',1)" '+(idx===S.order.length-1?'disabled':'')+' class="w-8 h-8 bg-gray-200 rounded hover:bg-gray-300 disabled:opacity-30">↓</button></div></div>';
+            }
+          });
+          h += '</div></div>';
+        }
+        h += '</div>';
+      }
+      if (S.host) {
+        h += '<button onclick="hStartD()" '+(rc===0?'disabled':'')+' class="w-full bg-gradient-to-r from-orange-500 to-red-600 text-white py-4 rounded-xl font-bold text-lg disabled:opacity-50 flex items-center justify-center gap-2">▶️ התחל דראפט ('+rc+' מוכנים)</button>';
+      }
+      h += '</div></div></div>';
+      return h;
+    }
+
+    function rDraft(gd) {
+      const ti = getTurn(gd);
+      let h = '<div class="min-h-screen bg-gradient-to-br from-green-600 to-teal-600 p-4"><div class="max-w-6xl mx-auto">';
+      if (ti) {
+        h += '<div class="mb-6 p-6 rounded-3xl shadow-xl '+(ti.isMyTurn?'bg-yellow-400 animate-pulse':'bg-white')+'">'+
+          '<div class="text-center"><p class="text-2xl font-bold mb-2">'+(ti.isMyTurn?'🔥 התור שלך לבחור! 🔥':'⏳ התור של: '+ti.captain)+'</p>'+
+          '<p class="text-lg font-medium">קבוצה: <span class="font-bold">'+ti.team.name+'</span></p>'+
+          '<div class="mt-2 inline-flex items-center gap-2 text-xs '+(ti.isMyTurn?'text-gray-700':'text-green-600')+' bg-white bg-opacity-50 px-3 py-1 rounded-full">'+
+          '<div class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>מסונכרן בזמן אמת</div></div></div>';
+      }
+      if (gd.pendingPick) {
+        h += '<div class="mb-6 p-6 rounded-2xl bg-orange-100 border-4 border-orange-400 shadow-xl">'+
+          '<div class="text-center"><p class="text-lg font-bold text-orange-800 mb-3">✓ נבחר: '+gd.pendingPick.playerName+'</p>'+
+          '<div class="flex gap-3 justify-center">'+
+          '<button onclick="hConfP()" class="bg-green-500 text-white px-8 py-3 rounded-xl font-bold hover:bg-green-600">✓ סיימתי - עבור לתור הבא</button>'+
+          '<button onclick="hCanPend()" class="bg-gray-400 text-white px-6 py-3 rounded-xl font-bold hover:bg-gray-500">✗ בטל בחירה</button>'+
+          '</div></div></div>';
+      }
+      h += '<div class="bg-white rounded-3xl shadow-2xl p-6 mb-6"><div class="flex items-center justify-between mb-4">'+
+        '<h3 class="text-2xl font-bold">שחקנים זמינים</h3>';
+      if (S.host && gd.lastPick) {
+        h += '<button onclick="hUndoP()" class="bg-red-100 text-red-700 px-4 py-2 rounded-lg font-bold hover:bg-red-200">↶ אחורה</button>';
+      }
+      h += '</div><div class="grid grid-cols-2 md:grid-cols-4 gap-3">';
+      gd.players.filter(p => p.available).forEach(pl => {
+        const canP = ti && ti.isMyTurn && !gd.pendingPick;
+        const isPend = gd.pendingPick && gd.pendingPick.playerId === pl.id;
+        h += '<button onclick="hMakePk(\''+pl.id+'\')" '+(!canP?'disabled':'')+' class="p-4 rounded-xl border-2 '+(isPend?'bg-orange-400 text-white border-orange-600 scale-105 animate-pulse':canP?'bg-gradient-to-br from-blue-400 to-purple-500 text-white border-purple-600 hover:scale-105':'bg-gray-100 text-gray-500 border-gray-300 cursor-not-allowed')+'">'+pl.name+'</button>';
+      });
+      h += '</div></div><div class="grid md:grid-cols-3 gap-4 mb-6">';
+      gd.teams.forEach(t => {
+        h += '<div class="bg-white rounded-3xl shadow-xl p-6">'+
+          '<div class="w-12 h-12 rounded-full '+COLORS[t.name]+' mx-auto mb-3"></div>'+
+          '<h3 class="text-xl font-bold text-center mb-2">'+t.name+'</h3>'+
+          '<p class="text-sm text-gray-600 text-center mb-4">קפטן: '+t.captain+'</p><div class="space-y-2">';
+        t.players.forEach(p => {
+          h += '<div class="bg-gray-100 p-2 rounded-lg text-center text-sm">'+p+'</div>';
+        });
+        h += '</div></div>';
+      });
+      h += '</div>';
+      if (S.host) {
+        h += '<div class="flex gap-2"><button onclick="hRstD()" class="flex-1 bg-red-500 text-white py-3 rounded-xl font-bold hover:bg-red-600">🔄 אפס דראפט</button>'+
+          '<button onclick="hFullR()" class="px-4 bg-gray-500 text-white py-3 rounded-xl font-bold hover:bg-gray-600" title="איפוס מלא">🗑️</button></div>';
+      }
+      h += '</div></div>';
+      return h;
+    }
+
+    function rComp(gd) {
+      let h = '<div class="min-h-screen bg-gradient-to-br from-yellow-400 to-orange-500 p-4"><div class="max-w-4xl mx-auto">'+
+        '<div class="bg-white rounded-3xl shadow-2xl p-8 mb-6"><div class="text-center mb-8">'+
+        '<div class="text-7xl mb-4 animate-bounce">🏆</div><h2 class="text-4xl font-bold mb-2">הדראפט הסתיים!</h2>'+
+        '<p class="text-gray-600">הנה הקבוצות שלכם</p></div><div class="grid md:grid-cols-3 gap-6 mb-8">';
+      gd.teams.forEach(t => {
+        h += '<div class="bg-gradient-to-br from-gray-50 to-gray-100 rounded-2xl p-6 border-4 border-gray-300">'+
+          '<div class="w-16 h-16 rounded-full '+COLORS[t.name]+' mx-auto mb-4"></div>'+
+          '<h3 class="text-2xl font-bold text-center mb-3">'+t.name+'</h3>'+
+          '<div class="bg-yellow-100 border-2 border-yellow-400 rounded-lg p-3 mb-4">'+
+          '<p class="text-center font-bold text-yellow-800">👑 '+t.captain+'</p></div><div class="space-y-2">';
+        t.players.filter(p => p !== t.captain).forEach(p => {
+          h += '<div class="bg-white p-3 rounded-lg text-center border border-gray-200">'+p+'</div>';
+        });
+        h += '</div></div>';
+      });
+      h += '</div><div class="space-y-4">'+
+        '<button onclick="hShareWA()" class="w-full bg-green-500 text-white py-4 rounded-xl font-bold text-lg hover:bg-green-600 flex items-center justify-center gap-2">📤 שתף בוואטסאפ</button>';
+      if (S.host) {
+        h += '<div class="flex gap-2">'+
+          '<button onclick="hRstD()" class="flex-1 bg-gray-500 text-white py-3 rounded-xl font-bold hover:bg-gray-600">🔄 התחל דראפט חדש</button>'+
+          '<button onclick="hFullR()" class="px-4 bg-red-500 text-white py-3 rounded-xl font-bold hover:bg-red-600" title="איפוס מלא">🗑️</button></div>';
+      }
+      h += '</div></div></div></div>';
+      return h;
+    }
+
+    window.hInitG = () => { S.input = document.getElementById('inp').value; initGame(); };
+    window.hTogC = togCap;
+    window.hRandC = randCaps;
+    window.hAssT = assignT;
+    window.hFinC = finCaps;
+    window.hJoinL = () => { S.nick = document.getElementById('nickIn').value; joinLob(); };
+    window.hSelT = selTeam;
+    window.hTogR = togReady;
+    window.hTogMan = togMan;
+    window.hMoveO = moveO;
+    window.hRandO = randO;
+    window.hStartD = startD;
+    window.hMakePk = makePk;
+    window.hConfP = confPk;
+    window.hUndoP = undoPk;
+    window.hCanPend = canPend;
+    window.hRstD = rstDraft;
+    window.hShareWA = shareWA;
+    window.hFullR = fullRst;
+
+    init();
+  </script>
+</body>
+</html>
