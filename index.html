@@ -5,14 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Draft21</title>
 
-  <!-- 📱 אייקונים לשמירה ב-Home Screen -->
+  <!-- PWA / Icons -->
   <link rel="icon" type="image/png" href="draft21icon.png">
   <link rel="apple-touch-icon" href="draft21icon.png">
   <link rel="apple-touch-icon" sizes="180x180" href="draft21icon.png">
   <link rel="icon" type="image/png" sizes="192x192" href="draft21icon.png">
   <link rel="icon" type="image/png" sizes="512x512" href="draft21icon.png">
-
-  <!-- PWA - שם האפליקציה בהום סקרין -->
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Draft21">
@@ -44,6 +42,7 @@
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
     import { getFirestore, doc, onSnapshot, setDoc, updateDoc, runTransaction, getDoc } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js';
 
+    // ===== Firebase =====
     const app = initializeApp({
       apiKey: "AIzaSyBqz4oHoqGtnzjWqgzjWmwsUv6Kny75QpM",
       authDomain: "draft21-eabc3.firebaseapp.com",
@@ -52,45 +51,34 @@
       messagingSenderId: "489648686113",
       appId: "1:489648686113:web:94d3605a0e5a871a434f60",
     });
-
     const db = getFirestore(app);
+
     const COLORS = { Red: 'bg-red-500', White: 'bg-gray-100', Black: 'bg-gray-900' };
 
-    // =========================
-    // Local UI/session state
-    // =========================
+    // ===== Local UI/session state =====
     let S = {
       phase: 'setup', input: '', nick: '', id: '', host: false,
       caps: [], assigns: {}, order: [], manual: false, manualColors: true
     };
 
-    // =========================
-    // Helpers (order + bounce)
-    // =========================
-
-    // One "bounce" step: 0→1→2→2→1→0→0→1→2→2...
+    // ===== Helpers: bounce snake order =====
     function stepBounce(pos, dir, len) {
       if ((pos === len - 1 && dir === 1) || (pos === 0 && dir === -1)) {
-        // At an end -> flip direction, stay on same index (double pick)
-        dir = -dir;
+        dir = -dir; // flip, stay (double pick at edges)
       } else {
         pos = pos + dir; // move one
       }
       return { pos, dir };
     }
-
-    // Is a team full (7 players including captain)?
     function teamIsFull(teams, name) {
       const t = teams.find(tm => tm.name === name);
       return t ? t.players.length >= 7 : true;
     }
-
-    // Advance to the next team that is NOT full, with bounce behavior.
     function advanceToNextOpenTeam(order, pos, dir, teams) {
       const len = order.length || 0;
       if (!len) return { pos: 0, dir: 1 };
       let guard = 0;
-      ({ pos, dir } = stepBounce(pos, dir, len)); // always try to move once
+      ({ pos, dir } = stepBounce(pos, dir, len));
       while (guard < len * 4 && teamIsFull(teams, order[pos])) {
         ({ pos, dir } = stepBounce(pos, dir, len));
         guard++;
@@ -98,18 +86,22 @@
       return { pos, dir };
     }
 
-    // Is current user the CAPTAIN of the current team?
-    // Here we define "captain user" as the participant whose nick equals the captain's name.
+    // ===== Captain identity (robust) =====
+    // We support two ways to be recognized as captain:
+    // 1) Team has captainUserId set -> only that participant id is captain.
+    // 2) Fallback: participant.nick === team.captain (exact text match), if no captainUserId claimed yet.
     function isMyTeamAndIAmCaptain(gd, teamName) {
       const my = gd.participants.find(p => p.id === S.id);
       const tm = gd.teams.find(t => t.name === teamName);
       if (!my || !tm) return false;
+      if (tm.captainUserId) {
+        return my.teamName === teamName && tm.captainUserId === S.id;
+      }
+      // fallback (before claiming): nick equals captain's name
       return my.teamName === teamName && my.nick === tm.captain;
     }
 
-    // =========================
-    // Boot + live updates
-    // =========================
+    // ===== Boot + live redraw =====
     function init() {
       const n = localStorage.getItem('d21_nick');
       const i = localStorage.getItem('d21_id');
@@ -129,9 +121,7 @@
       });
     }
 
-    // =========================
-    // Setup screen
-    // =========================
+    // ===== Setup =====
     function clean(t) {
       return t
         .split('\n')
@@ -152,9 +142,7 @@
       localStorage.setItem('d21_host','1');
     }
 
-    // =========================
-    // Captains
-    // =========================
+    // ===== Captains selection =====
     function togCap(id) {
       const i = S.caps.indexOf(id);
       if (i > -1) S.caps.splice(i,1);
@@ -213,15 +201,14 @@
       const gd = snap.data();
       const tms = S.caps.map(cid => {
         const cap = gd.players.find(p => p.id === cid);
-        return {name:S.assigns[cid], captain:cap.name, captainId:cid, players:[cap.name]};
+        // NEW: captainUserId is null until claimed in lobby
+        return {name:S.assigns[cid], captain:cap.name, captainId:cid, captainUserId:null, players:[cap.name]};
       });
       const up = gd.players.map(p => ({...p, available:!S.caps.includes(p.id)}));
       await updateDoc(doc(db,'games','current'), {teams:tms, players:up, status:'lobby'});
     }
 
-    // =========================
-    // Lobby
-    // =========================
+    // ===== Lobby =====
     async function joinLob() {
       if (!S.nick.trim()) return;
       const pid = S.id || 'p'+Date.now();
@@ -258,6 +245,20 @@
       await updateDoc(doc(db,'games','current'), {participants:nps});
     }
 
+    async function claimCaptain(tn) {
+      const snap = await getDoc(doc(db,'games','current'));
+      if (!snap.exists()) return;
+      const gd = snap.data();
+      const tm = gd.teams.find(t => t.name === tn);
+      const me = gd.participants.find(p => p.id === S.id);
+      if (!tm || !me) return;
+      if (me.teamName !== tn) return;           // must belong to the team
+      if (tm.captainUserId) return;             // already claimed
+      // (Optionally, enforce nick match here: if (me.nick !== tm.captain) return;)
+      const upTeams = gd.teams.map(t => t.name === tn ? ({...t, captainUserId: S.id}) : t);
+      await updateDoc(doc(db,'games','current'), {teams: upTeams});
+    }
+
     async function togMan() {
       S.manual = !S.manual;
       const snap = await getDoc(doc(db,'games','current'));
@@ -285,7 +286,6 @@
       render();
     }
 
-    // Start draft: USE THE DECIDED ORDER, and do NOT filter by ready.
     async function startD() {
       const snap = await getDoc(doc(db,'games','current'));
       if (!snap.exists()) return;
@@ -293,14 +293,13 @@
 
       let ord = [];
       if (S.manual && S.order.length > 0) {
-        ord = S.order.slice(); // the user's chosen first/second/third
+        ord = S.order.slice(); // user-chosen 1st/2nd/3rd
       } else {
         ord = gd.teams.map(t => t.name).sort(() => Math.random()-.5);
       }
-
       await updateDoc(doc(db,'games','current'), {
         status:'draft',
-        turn:{order:ord, index:0, direction:1} // start at team 0, forward
+        turn:{order:ord, index:0, direction:1} // start at first, go forward
       });
     }
 
@@ -309,24 +308,19 @@
       const tn = gd.turn.order[gd.turn.index % gd.turn.order.length];
       const t = gd.teams.find(tm => tm.name === tn);
       if (!t) return null;
-      // It's my turn ONLY if I am the CAPTAIN of this team:
       const isCaptainTurn = isMyTeamAndIAmCaptain(gd, tn);
       return {team:t, captain:t.captain, teamName:tn, isMyTurn:isCaptainTurn};
     }
 
-    // =========================
-    // Draft actions (ONLY CAPTAINS)
-    // =========================
+    // ===== Draft (captains only) =====
     async function makePk(pid) {
       const snap = await getDoc(doc(db,'games','current'));
       if (!snap.exists()) return;
       const gd = snap.data();
       const ti = getTurn(gd);
 
-      // Only the CAPTAIN of the current team may pick (no admin override)
+      // Only the current team's captain can pick
       if (!ti || !ti.isMyTurn || gd.pendingPick) return;
-
-      // prevent picking for a full team
       if (ti.team.players.length >= 7) return;
 
       const pl = gd.players.find(p => p.id === pid);
@@ -337,7 +331,7 @@
           playerId: pid,
           playerName: pl.name,
           teamName: ti.teamName,
-          pickerId: S.id // the captain user id
+          pickerId: S.id
         }
       });
     }
@@ -347,7 +341,7 @@
       if (!snap.exists()) return;
       const gd = snap.data();
 
-      // Only the CAPTAIN who picked can confirm
+      // Only the same captain who picked can confirm
       if (!gd.pendingPick || gd.pendingPick.pickerId !== S.id) return;
 
       await runTransaction(db, async t => {
@@ -363,22 +357,24 @@
         const curTeam = gd.teams.find(tm => tm.name === tn);
         if (!curTeam || curTeam.players.length >= 7) return;
 
-        // Ensure confirmer is the CAPTAIN of this team
-        if (!isMyTeamAndIAmCaptain(gd, tn)) return;
+        // Double-check captainship at commit time
+        const meIsCaptain = (() => {
+          if (curTeam.captainUserId) return curTeam.captainUserId === S.id;
+          const my = gd.participants.find(p => p.id === S.id);
+          return my && my.teamName === tn && my.nick === curTeam.captain;
+        })();
+        if (!meIsCaptain) return;
 
         const pl = gd.players.find(p => p.id === pid);
         if (!pl || !pl.available) return;
 
-        // Apply the pick
         const upPlayers = gd.players.map(p => p.id === pid ? ({...p, available:false}) : p);
         const upTeams   = gd.teams.map(tm => tm.name === tn ? ({...tm, players:[...tm.players, pn]}) : tm);
         const picks     = [...gd.picks, {teamName:tn, playerName:pn}];
 
-        // Finish condition: all players taken OR all teams >= 7 players
         const allTaken  = upPlayers.every(p => !p.available);
         const fullTeams = upTeams.every(t => t.players.length >= 7);
 
-        // Compute next turn using BOUNCE (1,2,3,3,2,1,1,2,3,3,...) and SKIP FULL TEAMS
         const order = gd.turn.order;
         let pos     = gd.turn.index || 0;
         let dir     = gd.turn.direction || 1;
@@ -405,9 +401,8 @@
       });
     }
 
-    // Undo (kept for admin control/testing). Does not allow admin to make/confirm picks.
+    // Admin can still undo (state control) but cannot pick/confirm.
     async function undoPk() {
-      // Admin-only UI button below; anyone calling this still just rewinds state.
       await runTransaction(db, async t => {
         const ref = doc(db,'games','current');
         const snap = await t.get(ref);
@@ -417,38 +412,17 @@
 
         const {playerName: pn, teamName: tn} = gd.lastPick;
 
-        // Revert player availability
         const upPlayers = gd.players.map(p => p.name === pn ? ({...p, available:true}) : p);
-        // Remove from team
         const upTeams   = gd.teams.map(tm => tm.name === tn ? ({...tm, players: tm.players.filter(x => x !== pn)}) : tm);
-        // Remove last pick
         const picks = gd.picks.slice(0, -1);
 
-        // Recompute turn by simulating bounce+skip from start based on current team rosters
+        // Recompute next turn by walking the sequence length
         const order = gd.turn.order;
-        const len   = order.length || 0;
         let pos = 0, dir = 1;
 
-        // Build counts from teams (captain already counted)
-        const counts = {};
-        order.forEach(n => {
-          const tm = upTeams.find(t => t.name === n);
-          counts[n] = tm ? tm.players.length : 0;
-        });
-
-        // Find the next team that should pick by simulating picks.length steps
-        // Each step: the team at [pos] picks (if not full), then advance.
-        // We’ll fast-forward so that after processing 'picks' picks, (pos,dir) is the NEXT turn.
-        // (Since 'picks' array already reflects the applied picks, we can just walk.)
-        // Start from initial state: all captains counted, so we need to reconstruct the path:
-        // Instead, simpler: start from (0,1) and advance 'picks.length' times using advanceToNextOpenTeam
-        // as if each step consumed one pick.
-        // To do that correctly, we need dynamic counts as we walk:
+        // Simulate advancing 'picks.length' steps from start
+        // Using current upTeams to skip full teams
         for (let i = 0; i < picks.length; i++) {
-          // The team who just picked is picks[i].teamName; but to be consistent with skipping,
-          // we can just increment counts for that team then advance:
-          const tmN = picks[i].teamName;
-          counts[tmN] = (counts[tmN] || 0) + 0; // counts already reflect upTeams; no extra increment needed here
           const nd = advanceToNextOpenTeam(order, pos, dir, upTeams);
           pos = nd.pos; dir = nd.dir;
         }
@@ -469,14 +443,11 @@
       const snap = await getDoc(doc(db,'games','current'));
       if (!snap.exists()) return;
       const gd = snap.data();
-      // Only the same captain who picked can cancel the pending pick
       if (!gd.pendingPick || gd.pendingPick.pickerId !== S.id) return;
       await updateDoc(doc(db,'games','current'), {pendingPick:null});
     }
 
-    // =========================
-    // Reset / Share
-    // =========================
+    // ===== Reset / Share =====
     async function rstDraft() {
       const snap = await getDoc(doc(db,'games','current'));
       if (!snap.exists()) return;
@@ -485,6 +456,7 @@
         const isC = gd.teams.some(t => t.captainId === p.id);
         return {...p, available:!isC};
       });
+      // keep captainUserId so claims persist, but reset rosters to just captain
       const ut = gd.teams.map(t => ({...t, players:[t.captain]}));
       await updateDoc(doc(db,'games','current'), {
         status:'lobby', players:up, teams:ut, picks:[], pendingPick:null,
@@ -542,9 +514,7 @@
       }
     }
 
-    // =========================
-    // Rendering
-    // =========================
+    // ===== Rendering =====
     function render() {
       getDoc(doc(db,'games','current')).then(snap => {
         let h = '';
@@ -656,14 +626,12 @@
     }
 
     function rLobby(gd) {
-      const readyC = gd.participants.filter(p => p.ready && p.teamName).length;
-      const rc = readyC;
       const my = S.id ? gd.participants.find(p => p.id === S.id) : null;
 
       let h = '<div class="min-h-screen bg-gradient-to-br from-teal-500 to-cyan-600 p-4"><div class="max-w-4xl mx-auto">'+
         '<div class="bg-white rounded-3xl shadow-2xl p-8"><div class="text-center mb-8">'+
         '<h2 class="text-3xl font-bold mb-2">👥 לובי המתנה</h2>'+
-        '<p class="text-gray-600">בחרו סדר לקבוצות. הדראפט ירוץ כך: 1,2,3,3,2,1,1,2,3,3...</p></div>';
+        '<p class="text-gray-600">בחרו סדר לקבוצות. סדר הדראפט: 1,2,3,3,2,1,1,2,3,3...</p></div>';
 
       if (S.host) {
         h += '<div class="mb-6 text-center space-x-2 flex gap-2 justify-center">'+
@@ -678,30 +646,50 @@
           '<input id="nickIn" type="text" placeholder="הכנס את השם שלך..." value="'+S.nick+'" class="w-full p-3 rounded-lg border-2 border-blue-200 mb-3">'+
           '<button onclick="hJoinL()" class="w-full bg-blue-500 text-white py-3 rounded-xl font-bold hover:bg-blue-600">🎮 כניסה למשחק</button></div>';
       }
+
+      // Participants list
       h += '<div class="mb-6"><h3 class="text-xl font-bold mb-3">👥 משתתפים ('+gd.participants.length+'):</h3><div class="space-y-2">';
       gd.participants.forEach(p => {
         const tm = gd.teams.find(t => t.name === p.teamName);
-        const isCap = tm && p.nick === tm.captain;
+        let badge = '';
+        if (tm) {
+          if (tm.captainUserId === p.id) badge = ' (קפטן מאומת)';
+          else if (p.nick === tm.captain) badge = ' (קפטן לפי שם)';
+        }
         h += '<div class="flex items-center justify-between p-3 rounded-xl bg-gray-50 border-2 '+(p.ready?'border-green-400':'border-gray-200')+'">'+
           '<div class="flex items-center gap-3">'+(p.teamName?'<div class="w-8 h-8 rounded-full '+COLORS[p.teamName]+'"></div>':'')+
-          '<div><span class="font-medium block">'+p.nick+(isCap?' (קפטן)':'')+'</span>'+(tm?'<span class="text-xs text-gray-600">קבוצה: '+tm.name+'</span>':'<span class="text-xs text-red-600">לא בחר קבוצה</span>')+
+          '<div><span class="font-medium block">'+p.nick+(badge||'')+'</span>'+(tm?'<span class="text-xs text-gray-600">קבוצה: '+tm.name+'</span>':'<span class="text-xs text-red-600">לא בחר קבוצה</span>')+
           '</div></div>'+(p.ready?'<span class="text-2xl">✓</span>':'')+'</div>';
       });
       h += '</div></div>';
+
+      // Join + choose team
       if (my) {
         if (!my.teamName) {
           h += '<div class="mb-4 p-4 bg-yellow-50 border-2 border-yellow-300 rounded-xl">'+
             '<p class="font-bold text-yellow-800 mb-3 text-center">בחר את הקבוצה שלך:</p><div class="grid grid-cols-3 gap-3">';
           gd.teams.forEach(t => {
-            const taken = gd.participants.some(p => p.teamName === t.name && p.id !== S.id && p.nick === t.captain);
-            h += '<button onclick="hSelT(\''+t.name+'\')" '+(taken?'disabled':'')+' class="p-4 rounded-xl '+(taken?'bg-gray-200 opacity-50 cursor-not-allowed':'bg-white border-2 border-gray-300 hover:border-blue-500')+'">'+
+            h += '<button onclick="hSelT(\''+t.name+'\')" class="p-4 rounded-xl bg-white border-2 border-gray-300 hover:border-blue-500">'+
               '<div class="w-12 h-12 rounded-full '+COLORS[t.name]+' mx-auto mb-2"></div>'+
-              '<p class="font-bold text-sm">'+t.name+'</p><p class="text-xs text-gray-600">'+t.captain+'</p>'+(taken?'<p class="text-xs text-red-600 mt-1">הקפטן כבר תפס</p>':'')+'</button>';
+              '<p class="font-bold text-sm">'+t.name+'</p><p class="text-xs text-gray-600">'+t.captain+'</p></button>';
           });
-          h += '</div></div>';
+          h += '</div><p class="text-xs text-gray-600 mt-3 text-center">הקפטן האמיתי יכול ללחוץ Claim Captain כדי לאמת את עצמו.</p></div>';
         }
+
+        // Claim captain section
+        const myTeam = gd.teams.find(t => t.name === my?.teamName);
+        if (myTeam && !myTeam.captainUserId) {
+          h += '<div class="mb-4 p-4 bg-green-50 border-2 border-green-300 rounded-xl text-center">'+
+               '<p class="font-bold text-green-800 mb-2">אתה בקבוצה '+myTeam.name+'. אם אתה הקפטן האמיתי, לחץ לאימות.</p>'+
+               '<button onclick="hClaimCap(\''+myTeam.name+'\')" class="bg-green-600 text-white px-4 py-2 rounded-lg font-bold hover:bg-green-700">✅ Claim Captain</button>'+
+               '<p class="text-xs text-gray-600 mt-2">לא חייבים התאמת שם מדויקת. לאחר האימות רק אתה תוכל לבחור.</p>'+
+               '</div>';
+        }
+
         h += '<button onclick="hTogR()" '+(!my.teamName?'disabled':'')+' class="w-full py-4 rounded-xl font-bold mb-4 '+(!my.teamName?'bg-gray-200 text-gray-400 cursor-not-allowed':my.ready?'bg-gray-300 text-gray-700':'bg-green-500 text-white hover:bg-green-600')+'">'+(my.ready?'ביטול מוכן':my.teamName?'אני מוכן!':'בחר קבוצה קודם')+'</button>';
       }
+
+      // Order controls
       if (S.host && gd.teams.length === 3) {
         h += '<div class="border-t-2 pt-6 mt-6"><h3 class="text-xl font-bold mb-4">סדר הקבוצות</h3><div class="mb-4">'+
           '<button onclick="hTogMan()" class="w-full py-3 rounded-xl font-medium '+(S.manual?'bg-purple-500 text-white':'bg-gray-200 text-gray-700')+'">'+(S.manual?'✓ סדר ידני פעיל':'סדר אקראי (לחץ לסדר ידני)')+'</button></div>';
@@ -709,13 +697,14 @@
           h += '<div class="bg-gray-50 rounded-xl p-4 mb-4"><div class="flex items-center justify-between mb-3">'+
             '<h4 class="font-bold text-gray-700">בחר ראשון/שני/שלישי</h4>'+
             '<button onclick="hRandO()" class="text-sm bg-purple-100 text-purple-700 px-3 py-1 rounded-lg hover:bg-purple-200">🔀 ערבב</button></div>'+
-            '<p class="text-xs text-gray-500 mb-3">הדראפט ירוץ כך: 1,2,3,3,2,1,1,2,3,3...</p><div class="space-y-2">';
+            '<p class="text-xs text-gray-500 mb-3">הדראפט ירוץ: 1,2,3,3,2,1,1,2,3,3...</p><div class="space-y-2">';
           S.order.forEach((tn,idx) => {
             const tm = gd.teams.find(t => t.name === tn);
             if (tm) {
+              const claimed = tm.captainUserId ? ' · קפטן מאומת' : '';
               h += '<div class="flex items-center gap-2 bg-white p-3 rounded-lg"><span class="font-bold text-lg text-gray-500 w-8">'+(idx+1)+'.</span>'+
                 '<div class="w-8 h-8 rounded-full '+COLORS[tn]+'"></div><div class="flex-1">'+
-                '<span class="font-bold">'+tn+'</span><span class="text-sm text-gray-500 mr-2">('+tm.captain+')</span></div>'+
+                '<span class="font-bold">'+tn+'</span><span class="text-sm text-gray-500 mr-2">('+tm.captain+claimed+')</span></div>'+
                 '<div class="flex gap-1"><button onclick="hMoveO(\''+tn+'\',-1)" '+(idx===0?'disabled':'')+' class="w-8 h-8 bg-gray-200 rounded hover:bg-gray-300 disabled:opacity-30">↑</button>'+
                 '<button onclick="hMoveO(\''+tn+'\',1)" '+(idx===S.order.length-1?'disabled':'')+' class="w-8 h-8 bg-gray-200 rounded hover:bg-gray-300 disabled:opacity-30">↓</button></div></div>';
             }
@@ -724,6 +713,7 @@
         }
         h += '</div>';
       }
+
       if (S.host) {
         h += '<button onclick="hStartD()" class="w-full bg-gradient-to-r from-orange-500 to-red-600 text-white py-4 rounded-xl font-bold text-lg flex items-center justify-center gap-2">▶️ התחל דראפט</button>';
       }
@@ -735,14 +725,15 @@
       const ti = getTurn(gd);
       let h = '<div class="min-h-screen bg-gradient-to-br from-green-600 to-teal-600 p-4"><div class="max-w-6xl mx-auto">';
       if (ti) {
+        const capClaimed = ti.team.captainUserId ? ' (קפטן מאומת)' : '';
         h += '<div class="mb-6 p-6 rounded-3xl shadow-xl '+(ti.isMyTurn?'bg-yellow-400 animate-pulse':'bg-white')+'">'+
-          '<div class="text-center"><p class="text-2xl font-bold mb-2">'+(ti.isMyTurn?'🔥 התור שלך לבחור! 🔥':'⏳ התור של: '+ti.captain)+'</p>'+
+          '<div class="text-center"><p class="text-2xl font-bold mb-2">'+(ti.isMyTurn?'🔥 התור שלך לבחור! 🔥':'⏳ התור של: '+ti.captain+capClaimed)+'</p>'+
           '<p class="text-lg font-medium">קבוצה: <span class="font-bold">'+ti.team.name+'</span></p>'+
           '<div class="mt-2 inline-flex items-center gap-2 text-xs '+(ti.isMyTurn?'text-gray-700':'text-green-600')+' bg-white bg-opacity-50 px-3 py-1 rounded-full">'+
           '<div class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>מסונכרן בזמן אמת</div></div></div>';
       }
       if (gd.pendingPick) {
-        const canConfirm = gd.pendingPick.pickerId === S.id; // only the captain who picked
+        const canConfirm = gd.pendingPick.pickerId === S.id;
         h += '<div class="mb-6 p-6 rounded-2xl bg-orange-100 border-4 border-orange-400 shadow-xl">'+
           '<div class="text-center"><p class="text-lg font-bold text-orange-800 mb-3">✓ נבחר: '+gd.pendingPick.playerName+'</p>';
         if (canConfirm) {
@@ -751,7 +742,7 @@
             '<button onclick="hCanPend()" class="bg-gray-400 text-white px-6 py-3 rounded-xl font-bold hover:bg-gray-500">✗ בטל בחירה</button>'+
             '</div>';
         } else {
-          h += '<p class="text-sm text-gray-600 mt-2">ממתינים לאישור הקפטן...</p>';
+          h += '<p class="text-sm text-gray-600 mt-2">ממתינים לאישור הקפטן שבחר...</p>';
         }
         h += '</div></div>';
       }
@@ -762,16 +753,17 @@
       }
       h += '</div><div class="grid grid-cols-2 md:grid-cols-4 gap-3">';
       gd.players.filter(p => p.available).forEach(pl => {
-        const canP = ti && ti.isMyTurn && !gd.pendingPick; // ONLY captain of current team
+        const canP = ti && ti.isMyTurn && !gd.pendingPick;
         const isPend = gd.pendingPick && gd.pendingPick.playerId === pl.id;
         h += '<button onclick="hMakePk(\''+pl.id+'\')" '+(!canP?'disabled':'')+' class="p-4 rounded-xl border-2 '+(isPend?'bg-orange-400 text-white border-orange-600 scale-105 animate-pulse':canP?'bg-gradient-to-br from-blue-400 to-purple-500 text-white border-purple-600 hover:scale-105':'bg-gray-100 text-gray-500 border-gray-300 cursor-not-allowed')+'">'+pl.name+'</button>';
       });
       h += '</div></div><div class="grid md:grid-cols-3 gap-4 mb-6">';
       gd.teams.forEach(t => {
+        const capTag = t.captainUserId ? ' (מאומת)' : '';
         h += '<div class="bg-white rounded-3xl shadow-xl p-6">'+
           '<div class="w-12 h-12 rounded-full '+COLORS[t.name]+' mx-auto mb-3"></div>'+
           '<h3 class="text-xl font-bold text-center mb-2">'+t.name+'</h3>'+
-          '<p class="text-sm text-gray-600 text-center mb-4">קפטן: '+t.captain+'</p><div class="space-y-2">';
+          '<p class="text-sm text-gray-600 text-center mb-4">קפטן: '+t.captain+capTag+'</p><div class="space-y-2">';
         t.players.forEach(p => {
           h += '<div class="bg-gray-100 p-2 rounded-lg text-center text-sm">'+p+'</div>';
         });
@@ -815,9 +807,7 @@
       return h;
     }
 
-    // =========================
-    // Expose handlers
-    // =========================
+    // ===== Handlers =====
     window.hInitG = () => { S.input = document.getElementById('inp').value; initGame(); };
     window.hTogC = togCap;
     window.hRandC = randCaps;
@@ -832,13 +822,12 @@
     window.hStartD = startD;
     window.hMakePk = makePk;
     window.hConfP = confPk;
-    window.hUndoP = undoPk;
+    window.hUndoP = undoPk;       // admin tool only
     window.hCanPend = canPend;
     window.hRstD = rstDraft;
     window.hShareWA = shareWA;
     window.hFullR = fullRst;
-    window.hTogColMode = togColorsMode;
-    window.hRandCol = randColors;
+    window.hClaimCap = claimCaptain;
 
     init();
   </script>
