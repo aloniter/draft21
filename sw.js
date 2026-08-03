@@ -7,7 +7,7 @@
  * IMPORTANT: bump CACHE whenever any shell file changes, otherwise installed
  * phones keep serving the previous version until the cache name differs.
  */
-const CACHE = 'draft21-shell-v2';
+const CACHE = 'draft21-shell-v3';
 
 const SHELL = [
   './',
@@ -15,7 +15,7 @@ const SHELL = [
   './design.css',
   './script.js',
   './manifest.json',
-  './draft21icon.png',
+  './draft21icon.jpeg',
   './vendor/firebase-app.js',
   './vendor/firebase-firestore.js'
 ];

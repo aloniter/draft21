@@ -13,9 +13,9 @@
   "lang": "he",
   "icons": [
     {
-      "src": "draft21icon.png",
+      "src": "draft21icon.jpeg",
       "sizes": "512x512",
-      "type": "image/png",
+      "type": "image/jpeg",
       "purpose": "any"
     }
   ]
