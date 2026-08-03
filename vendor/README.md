@@ -32,15 +32,3 @@ grep -c gstatic.com vendor/firebase-firestore.js   # must print 0
 ```
 
 Then bump `CACHE` in `sw.js` so installed phones pick up the new files.
-
-## Rebuilding tailwind.css
-
-`tailwind.css` is a prebuilt Tailwind v3 stylesheet containing only the
-utilities this app actually uses. Regenerate it after adding new classes to
-`script.js` or `index.html`:
-
-```bash
-npx tailwindcss@3 -i tailwind.src.css -o tailwind.css --content "./index.html,./script.js" --minify
-```
-
-Then bump `CACHE` in `sw.js`.

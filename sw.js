@@ -7,13 +7,12 @@
  * IMPORTANT: bump CACHE whenever any shell file changes, otherwise installed
  * phones keep serving the previous version until the cache name differs.
  */
-const CACHE = 'draft21-shell-v1';
+const CACHE = 'draft21-shell-v2';
 
 const SHELL = [
   './',
   './index.html',
-  './tailwind.css',
-  './styles.css',
+  './design.css',
   './script.js',
   './manifest.json',
   './draft21icon.png',

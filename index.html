@@ -2,8 +2,9 @@
 <html lang="he" dir="rtl">
 <head>
   <meta charset="UTF-8">
-  <!-- viewport-fit=cover lets the gradients reach the screen edges; styles.css
-       then keeps content clear of the notch and the home indicator. -->
+  <!-- viewport-fit=cover lets the floodlight reach the screen edges;
+       design.css then keeps content clear of the notch and the home
+       indicator via the --sa-* tokens. -->
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>Draft21</title>
 
@@ -16,26 +17,39 @@
 
   <!-- PWA - שם האפליקציה בהום סקרין -->
   <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Draft21">
   <meta name="application-name" content="Draft21">
-  <meta name="theme-color" content="#3b82f6">
+  <meta name="theme-color" content="#06080B">
   <link rel="manifest" href="manifest.json">
 
-  <!-- Tailwind is prebuilt into tailwind.css (see vendor/README.md) so the app
-       has no CDN dependency at runtime. styles.css must stay last: it overrides
-       a few Tailwind utilities for safe-area handling. -->
-  <link rel="stylesheet" href="tailwind.css">
-  <link rel="stylesheet" href="styles.css">
+  <!-- The whole visual system lives in one hand-written stylesheet.
+       There is no CSS build step and no CDN: adding a class to
+       script.js means adding it here too, on purpose. -->
+  <link rel="stylesheet" href="design.css">
 </head>
-<body class="min-h-screen">
+<body>
   <div id="connbar"></div>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+  <!-- Turn handovers are signalled by colour and motion; this is the same
+       information for a screen reader. Visually hidden, never empty-checked. -->
+  <div id="live" role="status" aria-live="assertive" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap"></div>
+
+  <!-- First paint. Matches the real app's skeleton so the launch does
+       not flash a different-looking screen before script.js runs. -->
   <div id="app">
-    <div class="min-h-screen bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center p-4">
-      <div class="bg-white rounded-3xl shadow-2xl p-8 text-center">
-        <div class="text-6xl mb-4 animate-bounce">🏆</div>
-        <h1 class="text-3xl font-bold text-gray-800 mb-2">Draft21</h1>
-        <div class="animate-pulse text-gray-600">טוען את המערכת...</div>
+    <div class="scr">
+      <div class="wrap page center" style="flex:1">
+        <div class="stack-16 t-center" style="width:100%;max-width:340px">
+          <div class="brand center" style="gap:10px">
+            <span class="brand__mark">21</span>
+            <span class="t-h1" style="direction:ltr">Draft21</span>
+          </div>
+          <div class="skeleton" style="height:96px"></div>
+          <div class="skeleton" style="height:56px"></div>
+          <div class="skeleton" style="height:56px"></div>
+        </div>
       </div>
     </div>
   </div>
@@ -50,7 +64,6 @@
     }
   </script>
 
-  <!-- Link to external JavaScript file -->
   <script type="module" src="script.js"></script>
 </body>
 </html>

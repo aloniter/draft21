@@ -16,12 +16,12 @@ No build system, no framework, no npm dependencies at runtime.
 | --- | --- |
 | `index.html` | Shell, PWA meta, service-worker registration |
 | `script.js` | The whole app — state, Firestore transactions, rendering |
-| `tailwind.css` | **Prebuilt** Tailwind (from `tailwind.src.css`) — no CDN at runtime |
-| `styles.css` | Animations plus iOS safe-area / `dvh` overrides. **Must load after `tailwind.css`** |
+| `design.css` | The whole visual system — tokens, components, motion, RTL, safe areas. Hand-written, no build step |
 | `sw.js` | Service worker — caches the app shell so it opens without reception |
 | `vendor/` | Vendored Firebase SDK 10.7.1 — see `vendor/README.md` |
 | `firestore.rules` | Security rules |
 | `verify-rules.mjs` | Verifies the deployed rules from an untrusted client |
+| `DESIGN.md` | Research, the three explored directions, and the design system |
 
 ## Firebase project
 
@@ -46,6 +46,10 @@ python3 -m http.server 8899
 # then open http://localhost:8899/index.html
 ```
 
+`?lp=1` forces Firestore long-polling. It is only needed inside automated or
+proxied browsers, whose network stacks break the SDK's streaming-XHR probe and
+leave the listener silently unconnected. Real browsers never need it.
+
 ## Deploying the Firestore rules
 
 ```bash
@@ -68,13 +72,12 @@ Firebase console afterwards; the script prints its id.
 
 Two manual steps are easy to forget:
 
-1. **New Tailwind classes** → rebuild the stylesheet, or they will have no styling:
-   ```bash
-   npx tailwindcss@3 -i tailwind.src.css -o tailwind.css --content "./index.html,./script.js" --minify
-   ```
-2. **Any change to a shell file** (`index.html`, `script.js`, `tailwind.css`,
-   `styles.css`, `vendor/*`) → bump `CACHE` in `sw.js`. Installed phones keep
-   serving the previous version until the cache name changes.
+1. **New CSS classes** → add them to `design.css`. There is no build step and
+   no utility framework: every class in `script.js` is a named part of the
+   design system. See `DESIGN.md` before inventing a new one.
+2. **Any change to a shell file** (`index.html`, `script.js`, `design.css`,
+   `vendor/*`) → bump `CACHE` in `sw.js`. Installed phones keep serving the
+   previous version until the cache name changes.
 
 Upgrading the Firebase SDK is documented in `vendor/README.md`.
 
