@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <!-- viewport-fit=cover lets the gradients reach the screen edges; styles.css
+       then keeps content clear of the notch and the home indicator. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>Draft21</title>
+
+  <!-- 📱 אייקונים לשמירה ב-Home Screen -->
+  <link rel="icon" type="image/png" href="draft21icon.png">
+  <link rel="apple-touch-icon" href="draft21icon.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="draft21icon.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="draft21icon.png">
+  <link rel="icon" type="image/png" sizes="512x512" href="draft21icon.png">
+
+  <!-- PWA - שם האפליקציה בהום סקרין -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Draft21">
+  <meta name="application-name" content="Draft21">
+  <meta name="theme-color" content="#3b82f6">
+  <link rel="manifest" href="manifest.json">
+
+  <!-- Tailwind is prebuilt into tailwind.css (see vendor/README.md) so the app
+       has no CDN dependency at runtime. styles.css must stay last: it overrides
+       a few Tailwind utilities for safe-area handling. -->
+  <link rel="stylesheet" href="tailwind.css">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body class="min-h-screen">
+  <div id="connbar"></div>
+  <div id="app">
+    <div class="min-h-screen bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center p-4">
+      <div class="bg-white rounded-3xl shadow-2xl p-8 text-center">
+        <div class="text-6xl mb-4 animate-bounce">🏆</div>
+        <h1 class="text-3xl font-bold text-gray-800 mb-2">Draft21</h1>
+        <div class="animate-pulse text-gray-600">טוען את המערכת...</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Registered outside the module so the shell still gets cached even if the
+       app script itself fails to start. -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', function () {
+        navigator.serviceWorker.register('sw.js', { scope: './' }).catch(function () {});
+      });
+    }
+  </script>
+
+  <!-- Link to external JavaScript file -->
+  <script type="module" src="script.js"></script>
+</body>
+</html>

@@ -1,0 +1,85 @@
+@keyframes bounce {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-20px); }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+@keyframes fall {
+  to { transform: translateY(100vh) rotate(360deg); opacity: 0; }
+}
+
+.animate-bounce {
+  animation: bounce 1s infinite;
+}
+
+.animate-pulse {
+  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+.confetti {
+  position: fixed;
+  animation: fall 3s linear;
+  pointer-events: none;
+  font-size: 24px;
+  z-index: 9999;
+}
+
+/* ------------------------------------------------------------------ */
+/* iPhone / installed-PWA layout                                       */
+/* ------------------------------------------------------------------ */
+
+/* 100vh is wrong on iOS when the toolbars move; dvh tracks the real
+   viewport. The vh line stays first as the fallback. */
+.min-h-screen {
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+/* The page uses viewport-fit=cover so the gradients reach the screen edges.
+   Each phase root then keeps its own content clear of the notch, the home
+   indicator and the rounded corners. */
+#app > div {
+  padding-top: max(1rem, env(safe-area-inset-top));
+  padding-bottom: max(1rem, env(safe-area-inset-bottom));
+  padding-left: max(1rem, env(safe-area-inset-left));
+  padding-right: max(1rem, env(safe-area-inset-right));
+}
+
+/* Connectivity bar, pinned below the status bar. */
+.d21-connbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 40;
+  padding-top: max(0.5rem, calc(env(safe-area-inset-top) + 0.25rem));
+}
+
+/* Toasts clear the notch, and drop below the connectivity bar when it shows. */
+[data-toast] {
+  top: max(1rem, calc(env(safe-area-inset-top) + 0.5rem));
+}
+
+.d21-has-connbar [data-toast] {
+  top: max(4rem, calc(env(safe-area-inset-top) + 3.5rem));
+}
+
+/* The bar deliberately overlays the header instead of pushing content down.
+   Reflowing the page each time a flaky connection drops and recovers moves
+   every button mid-tap, which is far worse than briefly covering a heading. */
+
+/* Keeps the confirm/cancel pair reachable one-handed: with 21 names on screen
+   the pending-pick card would otherwise scroll off the top. */
+.d21-pending-sticky {
+  position: sticky;
+  top: max(0.5rem, calc(env(safe-area-inset-top) + 0.25rem));
+  z-index: 30;
+}
+
+.d21-has-connbar .d21-pending-sticky {
+  top: max(3.5rem, calc(env(safe-area-inset-top) + 3rem));
+}

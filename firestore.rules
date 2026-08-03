@@ -1,0 +1,99 @@
+rules_version = '2';
+
+// Draft21 security rules — schema v2.
+//
+// What these rules can and cannot do:
+//
+// The app has no user authentication. Identity is a per-device id kept in
+// localStorage and recorded inside the game document, so rules CANNOT verify
+// who is writing. "Only the host may undo", "only the captain whose turn it is
+// may pick" and similar are therefore enforced inside Firestore transactions
+// in script.js, which re-read the document before writing.
+//
+// What rules DO enforce here, which the client cannot bypass:
+//   * games can never be deleted from a client
+//   * the player roster is immutable for the life of a game
+//   * hostId can only change on its own (the host-key recovery flow)
+//   * hostKey and schema can never change
+//   * the document keeps a valid v2 shape, with no extra or missing fields
+//   * nothing outside /games is reachable at all
+//
+// Deliberately NOT enforced: how picks/turn/status may evolve. Undo shrinks
+// `picks`, reset empties it, and the turn is derived from its length, so
+// encoding those transitions here would risk rejecting a legitimate action
+// mid-draft for no security gain.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    match /games/{gameId} {
+
+      // The complete v2 field set. Both hasAll and hasOnly are checked so a
+      // client can neither drop a field nor smuggle in a new one.
+      function schemaKeys() {
+        return [
+          'schema', 'hostId', 'hostKey', 'status', 'players', 'teams',
+          'participants', 'picks', 'turn', 'settings', 'pendingPick', 'lastPick'
+        ];
+      }
+
+      // Fields the app legitimately rewrites while a game is being played:
+      // finalize captains, join, claim, release, start, pick, cancel, confirm,
+      // undo, reset and completion all stay inside this set.
+      function gameplayKeys() {
+        return ['status', 'teams', 'participants', 'picks', 'turn', 'pendingPick', 'lastPick'];
+      }
+
+      function shapeOk(d) {
+        return d.schema == 2
+          && d.keys().hasAll(schemaKeys())
+          && d.keys().hasOnly(schemaKeys())
+          && d.status in ['captains', 'lobby', 'draft', 'complete']
+          && d.hostId is string
+          && d.hostId.size() > 0
+          && d.hostKey is string
+          && d.players is list
+          && d.players.size() >= 6
+          && d.players.size() <= 21
+          && d.teams is list
+          && d.teams.size() <= 3
+          && d.participants is list
+          && d.participants.size() <= 60
+          && d.picks is list
+          && d.picks.size() <= 21
+          && d.turn is map
+          && d.settings is map;
+      }
+
+      // Anyone holding the game code can follow along.
+      allow read: if true;
+
+      allow create: if shapeOk(request.resource.data)
+        && request.resource.data.status == 'captains'
+        && request.resource.data.teams.size() == 0
+        && request.resource.data.participants.size() == 0
+        && request.resource.data.picks.size() == 0
+        && request.resource.data.pendingPick == null
+        && request.resource.data.lastPick == null;
+
+      // Two permitted kinds of update, and nothing else. Because the allowed
+      // key sets are stated positively, players / hostKey / schema are immutable
+      // by construction, and hostId can only move on its own.
+      allow update: if shapeOk(request.resource.data)
+        && resource.data.schema == 2
+        && (
+             request.resource.data.diff(resource.data).affectedKeys().hasOnly(gameplayKeys())
+             ||
+             request.resource.data.diff(resource.data).affectedKeys().hasOnly(['hostId'])
+           );
+
+      // Games are never removed from a client. Cleanup is a console job.
+      allow delete: if false;
+    }
+
+    // Everything else is closed.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

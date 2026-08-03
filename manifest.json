@@ -1,0 +1,22 @@
+{
+  "id": "draft21",
+  "name": "Draft21 - כלי דראפט כדורגל",
+  "short_name": "Draft21",
+  "description": "כלי דראפט מתקדם לחלוקת שחקני כדורגל ל-3 קבוצות",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#3b82f6",
+  "theme_color": "#3b82f6",
+  "orientation": "portrait",
+  "dir": "rtl",
+  "lang": "he",
+  "icons": [
+    {
+      "src": "draft21icon.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}
