@@ -1341,7 +1341,7 @@ function renderHome() {
         TEAM_COLORS.map((c, i) => '<span class="kits__item anim-rise anim-rise-' + (i + 1) + '">' +
           renderTeamShirt(c, 'shirt--xl') + '</span>').join('') +
       '</div>' +
-      '<div class="t-display">ערב דראפט.<br>עשרים ואחד שמות.<br>שלוש קבוצות.</div>' +
+      '<div class="t-display">Draft21<br>FC Yarkon</div>' +
       '<p class="t-body t-dim t-balance">הדבק את הרשימה, בחר קפטנים, וכולם עוקבים אחרי הבחירות בזמן אמת.</p>' +
     '</div>' +
 
