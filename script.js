@@ -1357,7 +1357,7 @@ function renderHome() {
       icon('back', 18) + '</button>';
   }
 
-  html += '<p class="t-micro t-center" style="margin-block-start:auto;padding-block-start:24px">DRAFT21 · לקבוצה שלנו בלבד · נוצר על ידי Alon Iter</p>' +
+  html += '<p class="t-micro t-center" style="margin-block-start:auto;padding-block-start:24px">DRAFT21 · נוצר על ידי Alon Iter</p>' +
     '</div></div>';
   return html;
 }
