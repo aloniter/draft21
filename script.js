@@ -216,11 +216,15 @@ let state = {
   // hostMenu: the host's destructive controls live in a sheet rather than
   // sitting under the player pool where they can be hit mid-draft.
   hostMenu: false,
+  // confirmReset: resetting is open to everyone, so the guard is a second,
+  // explicit tap in its own sheet — not a role check and not a native
+  // confirm() dialog, which some in-app browsers swallow silently.
+  confirmReset: false,
   // uiPrev: what the last paint showed, so a state-change animation only
   // fires when the underlying value actually changed. Firestore emits a
   // snapshot for every metadata blip; replaying the turn animation on each
   // one would be both wrong and distracting.
-  uiPrev: { turnKey: '', picks: -1, phase: '', mine: false, pending: '', hostMenu: false }
+  uiPrev: { turnKey: '', picks: -1, phase: '', mine: false, pending: '', hostMenu: false, confirmReset: false }
 };
 
 /* ------------------------------------------------------------------ */
@@ -461,8 +465,13 @@ function subscribeToGame() {
         render();
         return;
       } else {
+        const nextPhase = data.status || 'setup';
+        // Someone else may have reset (or the draft moved on) while a confirm
+        // sheet was open on this device. Drop it rather than leave a stale
+        // "are you sure?" over a board that already changed underneath it.
+        if (nextPhase !== state.phase) { state.confirmReset = false; state.hostMenu = false; }
         state.gameData = data;
-        state.phase = data.status || 'setup';
+        state.phase = nextPhase;
         state.loadError = '';
       }
     } else {
@@ -500,7 +509,8 @@ function leaveGame() {
   state.manualOrder = false;
   state.homeView = 'home';
   state.hostMenu = false;
-  state.uiPrev = { turnKey: '', picks: -1, phase: '', mine: false, pending: '', hostMenu: false };
+  state.confirmReset = false;
+  state.uiPrev = { turnKey: '', picks: -1, phase: '', mine: false, pending: '', hostMenu: false, confirmReset: false };
   localStorage.removeItem('d21_gameId');
   localStorage.removeItem('d21_caps');
   localStorage.removeItem('d21_assign');
@@ -987,11 +997,11 @@ async function undoPick() {
   });
 }
 
+// Anyone in the game can reset — waiting for whoever happens to hold the host
+// device was the single most common way an evening stalled. The safeguard is
+// the deliberate confirm sheet (`confirmReset`), not a permission check.
 async function resetDraft() {
-  if (!isHost(state.gameData)) { showError('רק המנהל יכול לאפס את הדראפט'); return; }
-  if (!confirm('לאפס את הדראפט? כל הבחירות יימחקו (הקפטנים והקבוצות יישמרו)')) return;
-  await mutate('שגיאה באיפוס', game => {
-    if (game.hostId !== state.clientId) throw new Error('רק המנהל יכול לאפס את הדראפט');
+  const ok = await mutate('שגיאה באיפוס', game => {
     if (!(game.teams || []).length) throw new Error('אין קבוצות לאפס');
     // Participants and their team claims are kept on purpose — wiping them
     // used to force every captain to rejoin and re-claim.
@@ -1003,6 +1013,10 @@ async function resetDraft() {
       turn: { order: [], index: 0, direction: 1 }
     };
   });
+  if (ok) {
+    state.confirmReset = false;
+    showNotice('הדראפט אופס — חוזרים לאולם ההמתנה');
+  }
 }
 
 function fullReset() {
@@ -1187,7 +1201,8 @@ function diffForAnimation(game) {
     phase: state.phase,
     mine: !!(turn && turn.isMine),
     pending,
-    hostMenu: !!state.hostMenu
+    hostMenu: !!state.hostMenu,
+    confirmReset: !!state.confirmReset
   };
   const anim = {
     turnChanged: !!next.turnKey && next.turnKey !== prev.turnKey && prev.phase === 'draft',
@@ -1196,7 +1211,8 @@ function diffForAnimation(game) {
     justFinished: next.phase === 'complete' && prev.phase === 'draft',
     justStarted: next.phase === 'draft' && prev.phase === 'lobby',
     pendingOpened: !!pending && pending !== prev.pending,
-    hostMenuOpened: next.hostMenu && !prev.hostMenu
+    hostMenuOpened: next.hostMenu && !prev.hostMenu,
+    confirmResetOpened: next.confirmReset && !prev.confirmReset
   };
   state.uiPrev = next;
   return anim;
@@ -1642,12 +1658,14 @@ function renderLobby(game, anim) {
       html += '<div class="roster__empty">הסדר ייקבע אקראית ברגע ההתחלה, ויתהפך בכל סיבוב.</div>';
     }
     html += '</div>';
-    html += '<div class="t-center"><button onclick="handleOpenHostMenu()" class="linkish">כלי מנהל</button></div>';
   } else {
     html += '<div class="card row" data-waiting-start><span class="livedot t-volt"></span>' +
       '<span class="t-meta grow">ממתין שהמנהל יתחיל את הדראפט…</span></div>' +
       hostRecoveryBlock();
   }
+
+  // Everyone gets the menu, because everyone can reset from it.
+  html += '<div class="t-center"><button onclick="handleOpenHostMenu()" class="linkish">' + escapeHtml(toolsMenuLabel(game)) + '</button></div>';
 
   html += '</div>';
 
@@ -1666,7 +1684,7 @@ function renderLobby(game, anim) {
       '</div></div>';
   }
 
-  html += hostMenuSheet(game, anim) + '</div>';
+  html += toolsSheets(game, anim) + '</div>';
   return html;
 }
 
@@ -1849,7 +1867,7 @@ function renderDraft(game, anim) {
   const hasPending = !!game.pendingPick;
 
   let html = '<div class="scr" style="--glow:' + (turn && turn.isMine ? 'rgba(216,255,62,.24)' : 'rgba(30,180,120,.16)') + ';--dock-h:0px">' +
-    appBar(game, { trailing: (host ? '<button class="btn btn--quiet btn--icon" onclick="handleOpenHostMenu()" aria-label="כלי מנהל">' + icon('dots', 20) + '</button>' : '') + meChip(game) }) +
+    appBar(game, { trailing: '<button class="btn btn--quiet btn--icon" onclick="handleOpenHostMenu()" aria-label="' + escapeHtml(toolsMenuLabel(game)) + '">' + icon('dots', 20) + '</button>' + meChip(game) }) +
     '<div class="wrap page stack-16">' +
     draftHud(game, turn, anim) +
     pulseBar(game, turn);
@@ -1897,7 +1915,7 @@ function renderDraft(game, anim) {
 
   html += '</div>';
   if (hasPending) html += pendingSheet(game, turn, host, anim);
-  html += hostMenuSheet(game, anim) + '</div>';
+  html += toolsSheets(game, anim) + '</div>';
   return html;
 }
 
@@ -1938,24 +1956,40 @@ function pendingSheet(game, turn, host, anim) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Host tools                                                          */
+/* Tools + reset confirmation                                          */
 /* ------------------------------------------------------------------ */
+
+// The label everyone sees for the menu, and the wording of the reset itself:
+// "a new draft" once the teams are closed, "wipe the picks" mid-draft.
+function toolsMenuLabel(game) { return isHost(game) ? 'כלי מנהל' : 'אפשרויות'; }
+function resetActionLabel() {
+  return state.phase === 'complete' ? 'דראפט חדש עם אותם קפטנים' : 'אפס את כל הבחירות';
+}
+
+// Both sheets render from one call so every screen gets them together.
+function toolsSheets(game, anim) {
+  return toolsSheet(game, anim) + resetConfirmSheet(game, anim);
+}
 
 // Undo / reset / release used to sit inline under the player pool, one
 // mis-tap away from a live draft. They now live behind a deliberate sheet.
-function hostMenuSheet(game, anim) {
-  if (!state.hostMenu || !isHost(game)) return '';
+// Undo and release stay host-only — they are surgical, and the wrong person
+// undoing a pick is a silent change nobody notices. Reset is open to all: it
+// is loud, and someone always needs it while the host is out of the room.
+function toolsSheet(game, anim) {
+  if (!state.hostMenu) return '';
+  const host = isHost(game);
   const made = (game.picks || []).length;
-  const claimed = (game.teams || []).filter(t => claimantOf(game, t.id));
+  const claimed = host ? (game.teams || []).filter(t => claimantOf(game, t.id)) : [];
 
   const enter = anim && anim.hostMenuOpened ? ' sheet--in' : '';
   let html = '<div class="sheet__scrim' + (enter ? ' sheet__scrim--in' : '') + '" onclick="handleCloseHostMenu()"></div>' +
     '<div class="sheet' + enter + '" data-host-menu role="dialog"><div class="sheet__in stack-12">' +
     '<div class="sheet__grip"></div>' +
-    '<div class="row row--between"><span class="t-h2">כלי מנהל</span>' +
+    '<div class="row row--between"><span class="t-h2">' + escapeHtml(toolsMenuLabel(game)) + '</span>' +
       '<button class="btn btn--quiet btn--icon" onclick="handleCloseHostMenu()" aria-label="סגירה">' + icon('x', 18) + '</button></div>';
 
-  if (state.phase === 'draft' && made > 0) {
+  if (host && state.phase === 'draft' && made > 0) {
     html += '<button data-undo onclick="handleUndoPick()" class="btn btn--ghost btn--block">' + icon('undo', 18) + 'בטל את הבחירה האחרונה</button>';
   }
   claimed.forEach(t => {
@@ -1963,11 +1997,41 @@ function hostMenuSheet(game, anim) {
     html += '<button class="btn btn--ghost btn--block" onclick="handleReleaseTeam(\'' + escapeHtml(t.id) + '\')" data-team="' + escapeHtml(t.color) + '">' +
       '<span class="team-dot"></span>שחרר את ' + escapeHtml(colorHe(t.color)) + ' מ' + escapeHtml(holder.nick) + '</button>';
   });
-  html += '<button onclick="handleResetDraft()" class="btn btn--danger btn--block">' + icon('refresh', 18) +
-    (state.phase === 'complete' ? 'דראפט חדש עם אותם קפטנים' : 'אפס את כל הבחירות') + '</button>' +
+  html += '<button data-reset onclick="handleAskResetDraft()" class="btn btn--danger btn--block">' + icon('refresh', 18) +
+    resetActionLabel() + '</button>' +
+    '<div class="t-micro t-dim t-center">כל אחד במשחק יכול לאפס — יש אישור לפני.</div>' +
     '<button onclick="handleFullReset()" class="linkish">יציאה מהמשחק במכשיר הזה</button>' +
     '</div></div>';
   return html;
+}
+
+// The one guard on an action anybody can take: a second, explicit tap that
+// spells out exactly what disappears. Tapping the scrim cancels, so the
+// dangerous button is never the easy way out of the sheet.
+function resetConfirmSheet(game, anim) {
+  if (!state.confirmReset) return '';
+  const made = (game.picks || []).length;
+  const done = state.phase === 'complete';
+  const enter = anim && anim.confirmResetOpened ? ' sheet--in' : '';
+  return '<div class="sheet__scrim' + (enter ? ' sheet__scrim--in' : '') + '" onclick="handleCancelResetDraft()"></div>' +
+    '<div class="sheet' + enter + '" data-reset-confirm role="dialog" aria-modal="true"><div class="sheet__in stack-16">' +
+    '<div class="sheet__grip"></div>' +
+    '<div class="stack-8 t-center">' +
+      '<div class="t-micro">' + escapeHtml(resetActionLabel()) + '</div>' +
+      '<div class="sheet__name">' + (done ? 'להתחיל דראפט חדש?' : 'לאפס את הדראפט?') + '</div>' +
+      '<p class="t-body t-dim t-balance">' +
+        (made
+          ? (done ? 'הקבוצות שנסגרו יימחקו' : '<span class="num">' + made + '</span> בחירות יימחקו') +
+            ' וכולם חוזרים לאולם ההמתנה.'
+          : 'כולם חוזרים לאולם ההמתנה.') +
+        ' הקפטנים והקבוצות יישמרו.</p>' +
+      '<div class="t-micro t-dim">האיפוס חל על כל המשתתפים, לא רק על המכשיר שלך.</div>' +
+    '</div>' +
+    '<div class="row" style="gap:10px">' +
+      '<button data-reset-confirm-yes onclick="handleConfirmResetDraft()" class="btn btn--danger btn--lg grow">' + icon('refresh', 20) + 'כן, אפס</button>' +
+      '<button data-reset-confirm-no onclick="handleCancelResetDraft()" class="btn btn--ghost" style="flex:0 0 34%">' + icon('x', 18) + 'ביטול</button>' +
+    '</div>' +
+    '</div></div>';
 }
 
 /* ------------------------------------------------------------------ */
@@ -1997,14 +2061,14 @@ function renderComplete(game, anim) {
 
   html += '<div class="card stack-8">' + codeRow(game) + '</div>';
   if (!host) html += hostRecoveryBlock();
-  if (host) html += '<div class="t-center"><button onclick="handleOpenHostMenu()" class="linkish">כלי מנהל</button></div>';
+  html += '<div class="t-center"><button onclick="handleOpenHostMenu()" class="linkish">' + escapeHtml(toolsMenuLabel(game)) + '</button></div>';
 
   html += '</div>' +
     '<div class="dock dock--wide"><div class="dock__in stack-8">' +
       '<button data-share-wa onclick="handleShareWhatsApp()" class="btn btn--good btn--lg btn--block">' + icon('share', 20) + 'שתף בוואטסאפ</button>' +
       '<button data-copy-teams onclick="handleCopyTeams()" class="btn btn--ghost btn--block">' + icon('copy', 18) + 'העתק כטקסט</button>' +
     '</div></div>' +
-    hostMenuSheet(game, anim) +
+    toolsSheets(game, anim) +
     '</div>';
   return html;
 }
@@ -2021,6 +2085,11 @@ window.handleGoCreate = () => { state.homeView = 'create'; state.loadError = '';
 window.handleGoJoin = () => { state.homeView = 'join'; state.loadError = ''; render(); };
 window.handleOpenHostMenu = () => { state.hostMenu = true; render(); };
 window.handleCloseHostMenu = () => { state.hostMenu = false; render(); };
+// Reset is two taps: the menu hands off to the confirm sheet, and only that
+// sheet's own button actually writes.
+window.handleAskResetDraft = () => { state.hostMenu = false; state.confirmReset = true; haptic(20); render(); };
+window.handleCancelResetDraft = () => { state.confirmReset = false; render(); };
+window.handleConfirmResetDraft = () => { state.confirmReset = false; render(); return resetDraft(); };
 window.handleJoinCodeInput = v => { state.joinCode = v; };
 window.handleNicknameInput = v => { state.nickname = v; };
 window.handleHostKeyInput = v => { state.hostKeyInput = v; };
@@ -2044,7 +2113,8 @@ window.handleMakePick = makePick;
 window.handleConfirmPick = confirmPick;
 window.handleUndoPick = () => { state.hostMenu = false; return undoPick(); };
 window.handleCancelPending = cancelPendingPick;
-window.handleResetDraft = () => { state.hostMenu = false; return resetDraft(); };
+// Kept as an alias so nothing can reach the write without the confirm step.
+window.handleResetDraft = () => window.handleAskResetDraft();
 window.handleShareWhatsApp = shareWhatsApp;
 window.handleFullReset = () => { state.hostMenu = false; fullReset(); };
 window.handleRecoverHost = recoverHost;

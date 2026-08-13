@@ -111,7 +111,12 @@ and nothing can drift out of sync.
 - **Snake order** over 3 teams: `1 2 3 3 2 1 1 2 3 …`, computed from the number of
   picks made.
 - **Host** is whoever created the game (`hostId`). Only the host selects captains,
-  starts the draft, undoes a pick, resets, or releases a team.
+  starts the draft, undoes a pick, or releases a team.
+- **Resetting is open to everyone** in the game — host, captain or spectator — from
+  the menu in the top bar. It is guarded by an explicit "are you sure?" sheet
+  rather than by a permission check, because a draft that needs restarting while
+  the host is out of the room used to stall the whole evening. Undo stays
+  host-only: it is a quiet, surgical change, where a reset is loud and obvious.
 - **Captains** control only their own team's turn. If a team has no captain
   connected the host can pick for it, so a missing captain can never stall a draft.
 - **Host key** — a 4-character code shown only to the host. It moves host control to

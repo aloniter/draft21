@@ -132,7 +132,7 @@ await allowed('draft reaches completion', patch(TEST_ID, {
   pendingPick: null, lastPick: pick('p5', 't2', 2),
   turn: { order: ORDER, index: 0, direction: 1 }, status: 'complete'
 }));
-await allowed('host resets to lobby', patch(TEST_ID, {
+await allowed('anyone resets to lobby', patch(TEST_ID, {
   status: 'lobby', picks: [], pendingPick: null, lastPick: null, turn: { order: [], index: 0, direction: 1 }
 }));
 await allowed('host recovery moves hostId alone', patch(TEST_ID, { hostId: 'dev-host-2' }));

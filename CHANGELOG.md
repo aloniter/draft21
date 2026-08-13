@@ -1,5 +1,25 @@
 # Changelog
 
+## Reset for everyone — 2026-08-13
+
+- **Anyone in the game can reset the draft**, not just the host. Waiting for
+  whoever happens to be holding the host device was the most common way an
+  evening stalled. Both the client gate and the transaction's host check are
+  gone; the Firestore rules already allowed the write (they cannot identify an
+  actor at all), so nothing changed there.
+- **The guard is a confirmation sheet, not a role.** Tapping reset opens a
+  dedicated "בטוח שלאפס?" sheet stating how many picks disappear and that it
+  applies to everyone, with a danger button and a cancel. Tapping the scrim
+  cancels, so the destructive button is never the easy way out. It replaces the
+  native `confirm()`, which some in-app browsers swallow silently.
+- **The tools menu is reachable by everyone** — the dots button in the draft top
+  bar, and the menu link in the lobby and results screens, are no longer
+  host-only. It is titled "כלי מנהל" for the host and "אפשרויות" for everyone
+  else, and non-hosts see only reset and leave-on-this-device. Undo and release
+  stay host-only: they are quiet, surgical changes, where a reset is loud.
+- An open confirm sheet is dismissed if the phase changes underneath it, so a
+  reset by someone else cannot leave a stale prompt over a changed board.
+
 ## Design phase — 2026-08-03
 
 A complete product and visual redesign. No game logic, transaction, security-rule
