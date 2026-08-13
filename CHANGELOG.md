@@ -1,5 +1,35 @@
 # Changelog
 
+## Reset all the way back to the player list — 2026-08-13
+
+- **A second, deeper reset: "התחל מאפס — רשימה חדשה".** The picks-only reset kept
+  the roster and the captains, which is wrong for the common case — a new evening
+  with whoever actually turned up. The new option starts from the player list
+  itself: it opens the roster editor prefilled with the current names, and on
+  confirmation one write replaces `players`, empties the teams and picks, and puts
+  everyone back on captain selection.
+- **Same game code and same link.** Nobody has to be re-invited — every device
+  follows to the new captain-selection screen in realtime. Nicknames are kept so
+  people do not introduce themselves again; team claims are cleared, because the
+  new teams reuse the ids `t0..t2` and a stale claim would silently hand somebody
+  a team they never picked.
+- **Whoever restarts becomes the host**, in a separate write. Captain selection is
+  host-only, so without this a restart by anyone else would land the whole group
+  on a screen nobody present could act on.
+- **Nothing is destroyed until the confirm sheet is accepted.** Opening and editing
+  the list writes nothing, and the editor says so; the live draft carries on for
+  everyone until the final tap.
+- **`firestore.rules`: `players` is no longer frozen for the life of a game** — it
+  may change only in a write that also sets status `captains` with no teams, no
+  picks and no pending pick. The roster still cannot be edited under a live or
+  finished draft, which is the property that mattered; rewriting it as part of
+  "start the evening over" cannot corrupt anything because nothing is left to
+  corrupt. `verify-rules.mjs` gained the allowed restart plus three denied
+  variants (roster rewritten while the draft runs / with picks kept / with teams
+  kept). **This needs deploying — `firebase deploy --only firestore:rules`.**
+- A rejected write now says so in plain Hebrew and names the likely cause (rules
+  not deployed) instead of surfacing "Missing or insufficient permissions".
+
 ## Reset for everyone — 2026-08-13
 
 - **Anyone in the game can reset the draft**, not just the host. Waiting for

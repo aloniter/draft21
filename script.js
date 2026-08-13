@@ -140,7 +140,8 @@ const ICONS = {
   exit: '<path d="M14 4h4.5A1.5 1.5 0 0120 5.5v13a1.5 1.5 0 01-1.5 1.5H14" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/><path d="M10 8l-4 4 4 4M6 12h9" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/>',
   bolt: '<path d="M13.5 2L4 13.5h6L9.5 22 20 10.5h-6.4Z"/>',
   plus: '<path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/>',
-  key: '<circle cx="8" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="2.1"/><path d="M12 12h9m-3 0v3.5M21 12v3" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/>'
+  key: '<circle cx="8" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="2.1"/><path d="M12 12h9m-3 0v3.5M21 12v3" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/>',
+  list: '<path d="M9 6.5h11M9 12h11M9 17.5h11" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/><circle cx="4.6" cy="6.5" r="1.5"/><circle cx="4.6" cy="12" r="1.5"/><circle cx="4.6" cy="17.5" r="1.5"/>'
 };
 
 function icon(name, size) {
@@ -219,12 +220,17 @@ let state = {
   // confirmReset: resetting is open to everyone, so the guard is a second,
   // explicit tap in its own sheet — not a role check and not a native
   // confirm() dialog, which some in-app browsers swallow silently.
-  confirmReset: false,
+  // '' | 'picks' (wipe the picks) | 'roster' (start over from the player list).
+  confirmReset: '',
+  // rosterEdit: the player list open for editing on a game that already exists,
+  // i.e. the first step of a from-scratch restart. Nothing is written until the
+  // confirm sheet is accepted, so backing out of here destroys nothing.
+  rosterEdit: false,
   // uiPrev: what the last paint showed, so a state-change animation only
   // fires when the underlying value actually changed. Firestore emits a
   // snapshot for every metadata blip; replaying the turn animation on each
   // one would be both wrong and distracting.
-  uiPrev: { turnKey: '', picks: -1, phase: '', mine: false, pending: '', hostMenu: false, confirmReset: false }
+  uiPrev: { turnKey: '', picks: -1, phase: '', mine: false, pending: '', hostMenu: false, confirmReset: '' }
 };
 
 /* ------------------------------------------------------------------ */
@@ -469,7 +475,7 @@ function subscribeToGame() {
         // Someone else may have reset (or the draft moved on) while a confirm
         // sheet was open on this device. Drop it rather than leave a stale
         // "are you sure?" over a board that already changed underneath it.
-        if (nextPhase !== state.phase) { state.confirmReset = false; state.hostMenu = false; }
+        if (nextPhase !== state.phase) { state.confirmReset = ''; state.hostMenu = false; }
         state.gameData = data;
         state.phase = nextPhase;
         state.loadError = '';
@@ -509,8 +515,9 @@ function leaveGame() {
   state.manualOrder = false;
   state.homeView = 'home';
   state.hostMenu = false;
-  state.confirmReset = false;
-  state.uiPrev = { turnKey: '', picks: -1, phase: '', mine: false, pending: '', hostMenu: false, confirmReset: false };
+  state.confirmReset = '';
+  state.rosterEdit = false;
+  state.uiPrev = { turnKey: '', picks: -1, phase: '', mine: false, pending: '', hostMenu: false, confirmReset: '' };
   localStorage.removeItem('d21_gameId');
   localStorage.removeItem('d21_caps');
   localStorage.removeItem('d21_assign');
@@ -543,6 +550,10 @@ async function mutate(label, fn) {
     const code = (e && e.code) || '';
     if (code === 'unavailable' || code === 'deadline-exceeded' || /offline|network/i.test(String(e && e.message))) {
       showError('החיבור לא זמין — הפעולה לא בוצעה. בדוק את החיבור ונסה שוב.');
+    } else if (code === 'permission-denied' || /permission/i.test(String(e && e.message))) {
+      // Almost always one thing: the app was deployed but firestore.rules was
+      // not. Saying so beats "Missing or insufficient permissions".
+      showError('הפעולה נדחתה על ידי חוקי האבטחה. אם עדכנת את האפליקציה, פרסם גם את firestore.rules.');
     } else {
       showError(label + ': ' + (e && e.message ? e.message : 'שגיאה'));
     }
@@ -1014,9 +1025,56 @@ async function resetDraft() {
     };
   });
   if (ok) {
-    state.confirmReset = false;
+    state.confirmReset = '';
     showNotice('הדראפט אופס — חוזרים לאולם ההמתנה');
   }
+}
+
+// The deeper reset: the evening starts over from the player list itself, on the
+// same game code, so nobody has to be sent a new link. One write does the whole
+// thing — new roster, no teams, no picks, back at captain selection — which is
+// also exactly the shape the security rules require before they let `players`
+// change at all.
+async function restartWithRoster() {
+  const parsed = parseRoster(state.input);
+  if (parsed.errors.length) { showError(parsed.errors[0]); return; }
+  const players = parsed.names.map((name, index) => ({ id: 'p' + index, name }));
+  const wasHost = isHost(state.gameData);
+
+  const ok = await mutate('שגיאה באיפוס', game => ({
+    players,
+    status: 'captains',
+    teams: [],
+    // Nicknames are kept so nobody has to introduce themselves again, but every
+    // team claim must go: the new teams get the same ids (t0..t2), and a stale
+    // claim would silently hand somebody a team they never picked.
+    participants: (game.participants || []).map(p => ({ id: p.id, nick: p.nick, teamId: null, ready: true })),
+    picks: [],
+    turn: { order: [], index: 0, direction: 1 },
+    pendingPick: null,
+    lastPick: null
+  }));
+  if (!ok) return;
+
+  // Captain selection is host-only, so whoever restarts the evening has to be
+  // able to run it — otherwise a restart by anyone else lands the whole group
+  // on a screen nobody present can act on. Separate write: the rules only ever
+  // allow hostId to move on its own.
+  if (!wasHost) await mutate('שגיאה בהעברת ניהול', () => ({ hostId: state.clientId }));
+
+  state.rosterEdit = false;
+  state.confirmReset = '';
+  state.input = '';
+  state.captains = [];
+  state.teamAssignments = {};
+  state.draftOrder = [];
+  state.manualOrder = false;
+  localStorage.removeItem('d21_caps');
+  localStorage.removeItem('d21_assign');
+  // The snapshot that lands mid-write repaints while the editor is still up, so
+  // leaving it is not enough to leave the screen — paint again once it is.
+  render();
+  showNotice('המשחק אופס מההתחלה — בחר קפטנים מהרשימה החדשה');
 }
 
 function fullReset() {
@@ -1163,7 +1221,10 @@ function render() {
   const anim = diffForAnimation(game);
 
   let html = '';
-  if (state.phase === 'captains' && game) html = renderCaptains(game);
+  // Editing the roster of a game that exists outranks its phase: the draft on
+  // screen is exactly what this screen is about to replace.
+  if (state.rosterEdit && game) html = renderImport(game, anim);
+  else if (state.phase === 'captains' && game) html = renderCaptains(game);
   else if (state.phase === 'lobby' && game) html = renderLobby(game, anim);
   else if (state.phase === 'draft' && game) html = renderDraft(game, anim);
   else if (state.phase === 'complete' && game) html = renderComplete(game, anim);
@@ -1202,7 +1263,7 @@ function diffForAnimation(game) {
     mine: !!(turn && turn.isMine),
     pending,
     hostMenu: !!state.hostMenu,
-    confirmReset: !!state.confirmReset
+    confirmReset: state.confirmReset || ''
   };
   const anim = {
     turnChanged: !!next.turnKey && next.turnKey !== prev.turnKey && prev.phase === 'draft',
@@ -1212,7 +1273,7 @@ function diffForAnimation(game) {
     justStarted: next.phase === 'draft' && prev.phase === 'lobby',
     pendingOpened: !!pending && pending !== prev.pending,
     hostMenuOpened: next.hostMenu && !prev.hostMenu,
-    confirmResetOpened: next.confirmReset && !prev.confirmReset
+    confirmResetOpened: !!next.confirmReset && next.confirmReset !== prev.confirmReset
   };
   state.uiPrev = next;
   return anim;
@@ -1386,7 +1447,10 @@ function renderHome() {
 // Now the roster is parsed on every keystroke: you see the count, the names
 // the app actually understood, and any duplicate highlighted in place —
 // before committing anything.
-function renderImport() {
+// `game` is passed only on the restart path — the same screen, but it replaces
+// the roster of a game that already exists instead of creating a new one.
+function renderImport(game, anim) {
+  const restart = !!game;
   const parsed = parseRoster(state.input);
   const names = parsed.names;
   const count = names.length;
@@ -1400,8 +1464,16 @@ function renderImport() {
   });
 
   let html = '<div class="scr" style="--glow:rgba(216,255,62,.14);--dock-h:96px">' +
-    appBar(null, { back: 'handleGoHome()', title: 'רשימת השחקנים' }) +
+    appBar(restart ? game : null, {
+      back: restart ? 'handleCancelRosterRestart()' : 'handleGoHome()',
+      title: restart ? 'רשימה חדשה' : 'רשימת השחקנים'
+    }) +
     '<div class="wrap page stack-16">' +
+
+    (restart
+      ? '<div class="problem problem--warn" data-restart-notice>' + icon('refresh', 18) +
+        '<span>עריכת הרשימה מאפסת את המשחק מההתחלה. עד שתאשר, שום דבר לא נמחק — הדראפט הנוכחי ממשיך כרגיל אצל כולם.</span></div>'
+      : '') +
 
     '<div class="row row--between">' +
       '<span class="tally' + (count > MAX_PLAYERS ? ' t-bad' : (ready ? ' t-volt' : '')) + '">' +
@@ -1435,10 +1507,15 @@ function renderImport() {
 
   html += '</div>' +
     '<div class="dock"><div class="dock__in">' +
-      '<button data-create-game onclick="handleInitGame()" ' + (ready ? '' : 'disabled') + ' class="btn btn--volt btn--lg btn--block">' +
-        (ready ? '<span>צור משחק עם <span class="num">' + count + '</span> שחקנים</span>' + icon('back', 20) : 'הוסף עוד שמות כדי להמשיך') +
-      '</button>' +
+      (restart
+        ? '<button data-restart-submit onclick="handleAskRosterRestart()" ' + (ready ? '' : 'disabled') + ' class="btn btn--danger btn--lg btn--block">' +
+            (ready ? '<span>אפס והתחל עם <span class="num">' + count + '</span> שחקנים</span>' + icon('refresh', 20) : 'הוסף עוד שמות כדי להמשיך') +
+          '</button>'
+        : '<button data-create-game onclick="handleInitGame()" ' + (ready ? '' : 'disabled') + ' class="btn btn--volt btn--lg btn--block">' +
+            (ready ? '<span>צור משחק עם <span class="num">' + count + '</span> שחקנים</span>' + icon('back', 20) : 'הוסף עוד שמות כדי להמשיך') +
+          '</button>') +
     '</div></div>' +
+    (restart ? resetConfirmSheet(game, anim) : '') +
     '</div>';
   return html;
 }
@@ -1997,8 +2074,13 @@ function toolsSheet(game, anim) {
     html += '<button class="btn btn--ghost btn--block" onclick="handleReleaseTeam(\'' + escapeHtml(t.id) + '\')" data-team="' + escapeHtml(t.color) + '">' +
       '<span class="team-dot"></span>שחרר את ' + escapeHtml(colorHe(t.color)) + ' מ' + escapeHtml(holder.nick) + '</button>';
   });
+  // Two depths of reset, in the order people need them: keep the captains and
+  // redo the picks, or throw the whole evening away and start from the list of
+  // who actually turned up.
   html += '<button data-reset onclick="handleAskResetDraft()" class="btn btn--danger btn--block">' + icon('refresh', 18) +
     resetActionLabel() + '</button>' +
+    '<button data-restart-roster onclick="handleOpenRosterRestart()" class="btn btn--danger btn--block">' + icon('list', 18) +
+    'התחל מאפס — רשימה חדשה</button>' +
     '<div class="t-micro t-dim t-center">כל אחד במשחק יכול לאפס — יש אישור לפני.</div>' +
     '<button onclick="handleFullReset()" class="linkish">יציאה מהמשחק במכשיר הזה</button>' +
     '</div></div>';
@@ -2010,25 +2092,40 @@ function toolsSheet(game, anim) {
 // dangerous button is never the easy way out of the sheet.
 function resetConfirmSheet(game, anim) {
   if (!state.confirmReset) return '';
+  const roster = state.confirmReset === 'roster';
   const made = (game.picks || []).length;
   const done = state.phase === 'complete';
+  const newCount = roster ? parseRoster(state.input).names.length : 0;
+
+  const kicker = roster ? 'התחלה מאפס — רשימה חדשה' : resetActionLabel();
+  const headline = roster
+    ? 'לאפס את המשחק מההתחלה?'
+    : (done ? 'להתחיל דראפט חדש?' : 'לאפס את הדראפט?');
+  // What actually disappears, stated in full. A reset that anyone can trigger
+  // has to say out loud how far back it goes.
+  const body = roster
+    ? 'הרשימה הנוכחית, הקפטנים, הקבוצות' + (made ? ' וכל <span class="num">' + made + '</span> הבחירות' : '') +
+      ' יימחקו, והמשחק יתחיל מחדש עם <span class="num">' + newCount + '</span> השחקנים שהזנת.'
+    : (made
+        ? (done ? 'הקבוצות שנסגרו יימחקו' : '<span class="num">' + made + '</span> בחירות יימחקו') + ' וכולם חוזרים לאולם ההמתנה.'
+        : 'כולם חוזרים לאולם ההמתנה.') + ' הקפטנים והקבוצות יישמרו.';
+  const note = roster
+    ? 'אותו קוד משחק ואותו קישור — כולם עוברים איתך למסך בחירת הקפטנים, ואתה מנהל המשחק החדש.'
+    : 'האיפוס חל על כל המשתתפים, לא רק על המכשיר שלך.';
+
   const enter = anim && anim.confirmResetOpened ? ' sheet--in' : '';
   return '<div class="sheet__scrim' + (enter ? ' sheet__scrim--in' : '') + '" onclick="handleCancelResetDraft()"></div>' +
     '<div class="sheet' + enter + '" data-reset-confirm role="dialog" aria-modal="true"><div class="sheet__in stack-16">' +
     '<div class="sheet__grip"></div>' +
     '<div class="stack-8 t-center">' +
-      '<div class="t-micro">' + escapeHtml(resetActionLabel()) + '</div>' +
-      '<div class="sheet__name">' + (done ? 'להתחיל דראפט חדש?' : 'לאפס את הדראפט?') + '</div>' +
-      '<p class="t-body t-dim t-balance">' +
-        (made
-          ? (done ? 'הקבוצות שנסגרו יימחקו' : '<span class="num">' + made + '</span> בחירות יימחקו') +
-            ' וכולם חוזרים לאולם ההמתנה.'
-          : 'כולם חוזרים לאולם ההמתנה.') +
-        ' הקפטנים והקבוצות יישמרו.</p>' +
-      '<div class="t-micro t-dim">האיפוס חל על כל המשתתפים, לא רק על המכשיר שלך.</div>' +
+      '<div class="t-micro">' + escapeHtml(kicker) + '</div>' +
+      '<div class="sheet__name">' + headline + '</div>' +
+      '<p class="t-body t-dim t-balance">' + body + '</p>' +
+      '<div class="t-micro t-dim">' + note + '</div>' +
     '</div>' +
     '<div class="row" style="gap:10px">' +
-      '<button data-reset-confirm-yes onclick="handleConfirmResetDraft()" class="btn btn--danger btn--lg grow">' + icon('refresh', 20) + 'כן, אפס</button>' +
+      '<button data-reset-confirm-yes onclick="handleConfirmResetDraft()" class="btn btn--danger btn--lg grow">' + icon('refresh', 20) +
+        (roster ? 'כן, אפס מההתחלה' : 'כן, אפס') + '</button>' +
       '<button data-reset-confirm-no onclick="handleCancelResetDraft()" class="btn btn--ghost" style="flex:0 0 34%">' + icon('x', 18) + 'ביטול</button>' +
     '</div>' +
     '</div></div>';
@@ -2087,9 +2184,28 @@ window.handleOpenHostMenu = () => { state.hostMenu = true; render(); };
 window.handleCloseHostMenu = () => { state.hostMenu = false; render(); };
 // Reset is two taps: the menu hands off to the confirm sheet, and only that
 // sheet's own button actually writes.
-window.handleAskResetDraft = () => { state.hostMenu = false; state.confirmReset = true; haptic(20); render(); };
-window.handleCancelResetDraft = () => { state.confirmReset = false; render(); };
-window.handleConfirmResetDraft = () => { state.confirmReset = false; render(); return resetDraft(); };
+window.handleAskResetDraft = () => { state.hostMenu = false; state.confirmReset = 'picks'; haptic(20); render(); };
+window.handleCancelResetDraft = () => { state.confirmReset = ''; render(); };
+window.handleConfirmResetDraft = () => {
+  const mode = state.confirmReset;
+  state.confirmReset = '';
+  render();
+  return mode === 'roster' ? restartWithRoster() : resetDraft();
+};
+// The from-scratch restart starts by editing the list, prefilled with the names
+// already in the game: most weeks it is the same crowd with two or three swaps,
+// and retyping twenty-one names to change one is not a restart anyone will use.
+window.handleOpenRosterRestart = () => {
+  const game = state.gameData;
+  state.hostMenu = false;
+  state.confirmReset = '';
+  state.input = ((game && game.players) || []).map(p => p.name).join('\n');
+  state.rosterEdit = true;
+  haptic(20);
+  render();
+};
+window.handleAskRosterRestart = () => { state.confirmReset = 'roster'; haptic(20); render(); };
+window.handleCancelRosterRestart = () => { state.rosterEdit = false; state.confirmReset = ''; state.input = ''; render(); };
 window.handleJoinCodeInput = v => { state.joinCode = v; };
 window.handleNicknameInput = v => { state.nickname = v; };
 window.handleHostKeyInput = v => { state.hostKeyInput = v; };

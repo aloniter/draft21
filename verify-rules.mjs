@@ -81,6 +81,9 @@ const TEAMS = [
 ];
 const ORDER = ['t1', 't0', 't2'];
 const parts = TEAMS.map((t, i) => ({ id: 'dev' + i, nick: 'קפטן ' + i, teamId: t.id, ready: true }));
+// A second roster, for the full-restart checks: a different size and different
+// names, since that is exactly what "new list, same game code" looks like.
+const newPlayers = Array.from({ length: 7 }, (_, i) => ({ id: 'p' + i, name: 'סבב שני ' + i }));
 const pick = (pid, tid, seq) => ({ playerId: pid, playerName: 'בדיקה', teamId: tid, byId: 'dev0', seq });
 
 console.log(`\nDraft21 rules verification`);
@@ -137,7 +140,31 @@ await allowed('anyone resets to lobby', patch(TEST_ID, {
 }));
 await allowed('host recovery moves hostId alone', patch(TEST_ID, { hostId: 'dev-host-2' }));
 
-console.log('\n5. protected game state cannot be modified');
+// The full restart: a brand-new roster, permitted only because the same write
+// winds the whole game back to captain selection.
+await allowed('anyone restarts from scratch with a new roster', patch(TEST_ID, {
+  players: newPlayers, status: 'captains', teams: [], participants: [], picks: [],
+  turn: { order: [], index: 0, direction: 1 }, pendingPick: null, lastPick: null
+}));
+
+console.log('\n5. the roster can only change as part of a full restart');
+await denied('rewrite the roster while the draft keeps running', patch(TEST_ID, {
+  players, status: 'draft', teams: TEAMS, picks: [pick('p3', 't1', 0)],
+  turn: { order: ORDER, index: 1, direction: 1 }, pendingPick: null, lastPick: pick('p3', 't1', 0)
+}));
+await denied('rewrite the roster but keep the picks', patch(TEST_ID, {
+  players, status: 'captains', teams: [], picks: [pick('p3', 't1', 0)],
+  turn: { order: [], index: 0, direction: 1 }, pendingPick: null, lastPick: null
+}));
+await denied('rewrite the roster but keep the teams', patch(TEST_ID, {
+  players, status: 'captains', teams: TEAMS, picks: [],
+  turn: { order: [], index: 0, direction: 1 }, pendingPick: null, lastPick: null
+}));
+// Back to a started game, so the checks below are made against a live draft
+// rather than the captain-selection phase a restart legitimately opens up.
+await allowed('finalize the restarted game', patch(TEST_ID, { teams: TEAMS, status: 'lobby' }));
+
+console.log('\n6. protected game state cannot be modified');
 await denied('rename a player', patch(TEST_ID, { players: players.map((p, i) => i === 0 ? { ...p, name: 'מושתל' } : p) }));
 await denied('add a player', patch(TEST_ID, { players: players.concat([{ id: 'p99', name: 'גנוב' }]) }));
 await denied('remove a player', patch(TEST_ID, { players: players.slice(0, 5) }));
@@ -149,7 +176,7 @@ await denied('set an invalid status', patch(TEST_ID, { status: 'setup' }));
 await denied('add a 4th team', patch(TEST_ID, { teams: TEAMS.concat([{ id: 't3', color: 'Green', captainId: 'p5' }]) }));
 await denied('add an unknown field', patch(TEST_ID, { backdoor: 'yes' }));
 
-console.log('\n6. the test game itself cannot be deleted');
+console.log('\n7. the test game itself cannot be deleted');
 await denied('delete the test game', del(TEST_ID));
 
 const total = pass + failures.length;

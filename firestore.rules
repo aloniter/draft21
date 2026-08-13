@@ -12,7 +12,8 @@ rules_version = '2';
 //
 // What rules DO enforce here, which the client cannot bypass:
 //   * games can never be deleted from a client
-//   * the player roster is immutable for the life of a game
+//   * the player roster can only change in a write that simultaneously winds
+//     the whole game back to the start (the "new list from scratch" restart)
 //   * hostId can only change on its own (the host-key recovery flow)
 //   * hostKey and schema can never change
 //   * the document keeps a valid v2 shape, with no extra or missing fields
@@ -42,6 +43,13 @@ service cloud.firestore {
       // undo, reset and completion all stay inside this set.
       function gameplayKeys() {
         return ['status', 'teams', 'participants', 'picks', 'turn', 'pendingPick', 'lastPick'];
+      }
+
+      // The same set plus `players`, permitted only by the full-restart write
+      // below. Spelled out rather than concatenated so the allowed keys stay
+      // readable at a glance.
+      function restartKeys() {
+        return ['status', 'teams', 'participants', 'picks', 'turn', 'pendingPick', 'lastPick', 'players'];
       }
 
       function shapeOk(d) {
@@ -76,15 +84,32 @@ service cloud.firestore {
         && request.resource.data.pendingPick == null
         && request.resource.data.lastPick == null;
 
-      // Two permitted kinds of update, and nothing else. Because the allowed
-      // key sets are stated positively, players / hostKey / schema are immutable
-      // by construction, and hostId can only move on its own.
+      // Three permitted kinds of update, and nothing else. Because the allowed
+      // key sets are stated positively, hostKey / schema are immutable by
+      // construction and hostId can only move on its own.
+      //
+      // The third kind is the full restart — the game wound all the way back to
+      // the player list. It is the ONLY write that may touch `players`, and it
+      // may do so only while simultaneously emptying the draft: no teams, no
+      // picks, no pending pick, status back at 'captains'. So the roster still
+      // cannot be edited under a live or finished draft, which is the property
+      // that matters; rewriting it as part of "start the evening over" cannot
+      // corrupt anything, because there is nothing left to corrupt.
       allow update: if shapeOk(request.resource.data)
         && resource.data.schema == 2
         && (
              request.resource.data.diff(resource.data).affectedKeys().hasOnly(gameplayKeys())
              ||
              request.resource.data.diff(resource.data).affectedKeys().hasOnly(['hostId'])
+             ||
+             (
+               request.resource.data.diff(resource.data).affectedKeys().hasOnly(restartKeys())
+               && request.resource.data.status == 'captains'
+               && request.resource.data.teams.size() == 0
+               && request.resource.data.picks.size() == 0
+               && request.resource.data.pendingPick == null
+               && request.resource.data.lastPick == null
+             )
            );
 
       // Games are never removed from a client. Cleanup is a console job.

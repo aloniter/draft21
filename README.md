@@ -113,10 +113,19 @@ and nothing can drift out of sync.
 - **Host** is whoever created the game (`hostId`). Only the host selects captains,
   starts the draft, undoes a pick, or releases a team.
 - **Resetting is open to everyone** in the game — host, captain or spectator — from
-  the menu in the top bar. It is guarded by an explicit "are you sure?" sheet
-  rather than by a permission check, because a draft that needs restarting while
-  the host is out of the room used to stall the whole evening. Undo stays
-  host-only: it is a quiet, surgical change, where a reset is loud and obvious.
+  the menu in the top bar, at two depths, each behind its own explicit
+  "are you sure?" sheet rather than a permission check:
+  - *אפס את כל הבחירות* — the picks go, the captains and teams stay, everyone
+    lands back in the lobby.
+  - *התחל מאפס — רשימה חדשה* — the evening starts over from the player list
+    itself. You edit the roster (prefilled with the current names), and one write
+    replaces it, clears the teams and picks, and puts everyone back on captain
+    selection. Same game code and same link, so nobody has to be re-invited; and
+    because captain selection is host-only, whoever restarts becomes the host.
+
+  A draft that needed restarting while the host was out of the room used to stall
+  the whole evening. Undo stays host-only: it is a quiet, surgical change, where
+  a reset is loud and obvious.
 - **Captains** control only their own team's turn. If a team has no captain
   connected the host can pick for it, so a missing captain can never stall a draft.
 - **Host key** — a 4-character code shown only to the host. It moves host control to
@@ -125,9 +134,11 @@ and nothing can drift out of sync.
 ## Known limitations
 
 - **No authentication.** Identity is a per-device id in `localStorage`. The rules
-  make deletion and roster/host tampering impossible, but "only the captain whose
-  turn it is may pick" is enforced inside Firestore transactions — a group member
-  with devtools can still act as someone else. Acceptable for a private group.
+  make deletion and host tampering impossible, and the roster can only change in a
+  write that simultaneously winds the game back to captain selection — so it cannot
+  be edited under a live or finished draft. But "only the captain whose turn it is
+  may pick" is enforced inside Firestore transactions, so a group member with
+  devtools can still act as someone else. Acceptable for a private group.
 - **Not yet tested on real iOS Safari.** All mobile verification so far was
   emulated Chromium at iPhone dimensions.
 - **Legacy games are frozen.** Documents created before schema 2 remain readable but
