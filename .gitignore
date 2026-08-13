@@ -7,3 +7,4 @@ dist/
 *firebase-adminsdk*
 *service-account*
 .firebase/
+.vercel
