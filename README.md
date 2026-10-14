@@ -153,9 +153,11 @@ Upgrading the Firebase SDK is documented in `vendor/README.md`.
 - **A new version activates on the next launch**, never mid-session — `sw.js`
   deliberately does not call `skipWaiting()`, so a phone is never reloaded during a
   live draft.
-- **Reopening the app** after a finished draft lands on the home screen with a link
-  back to the previous results, instead of trapping you in last week's teams. A
-  shared link (which carries `#gameId`) always opens its own game.
+- **The bare address is always a clean start.** Opening `draft21.vercel.app` (or
+  the installed app) lands on the home screen, with "חזרה לדראפט האחרון" when this
+  phone was in a draft — never straight back into it. A shared link (which carries
+  `#gameId`) always opens its own draft. So the address can be sent to whoever
+  will organize next week, whatever they opened before.
 - **Requires HTTPS** in production. Service workers do not register over plain HTTP
   except on localhost — without it there is no offline protection at all.
 

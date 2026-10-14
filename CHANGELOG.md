@@ -1,5 +1,14 @@
 # Changelog
 
+## The bare address is always a clean start — 2026-10-14
+
+- Opening `draft21.vercel.app` with no draft in the link used to reopen whatever
+  draft that phone was last in — so sending the address to a new organizer could
+  drop them into an old draft instead of the home screen. It now always opens the
+  home screen, with **חזרה לדראפט האחרון** when there is one to go back to. Links
+  with a draft in them (`…/#abc123`) are unchanged.
+- The e2e run now names the step it was on if it ever times out.
+
 ## Anyone can reset, from every screen, behind a confirm — 2026-10-14
 
 - **Reset is everyone's again** — organizer, captain or watcher — and the ⋯ menu
