@@ -1,12 +1,12 @@
 # Draft21
 
-כלי דראפט פרטי לקבוצת הכדורגל שלנו. המנהל מדביק את רשימת השחקנים של אותו שבוע
-(6–21 שחקנים, ישר מוואטסאפ), מסמן 3 קפטנים, ושולח קישור אחד לקבוצה. מי שפותח את
-הקישור בוחר מי הוא בלחיצה אחת — קפטן אדום / לבן / שחור, מנהל, או צופה — בלי הרשמה
-ובלי סיסמה. הקפטנים בוחרים בתורות (סנייק) בזמן אמת, וכולם רואים את אותו מצב.
-בסוף המנהל מפרסם את הקבוצות לוואטסאפ.
+כלי דראפט פרטי לקבוצת הכדורגל שלנו. המארגן מדביק את רשימת השחקנים של אותו שבוע
+(ישר מוואטסאפ), מסמן 3 קפטנים, ושולח קישור אחד לקבוצה. כל קפטן פותח את הקישור
+ולוחץ על הקבוצה שלו — בלי קודים, בלי סיסמה ובלי הרשמה. הקפטנים בוחרים בתורות
+(סנייק: אדום → לבן → שחור → שחור → לבן → אדום) בזמן אמת, וכולם רואים את אותו מצב.
+בסוף המארגן מפרסם את הקבוצות לוואטסאפ.
 
-**Create → share one link → tap your role → draft live → final teams.**
+**One organizer. Three captains. One link. One live draft.**
 
 A private, Hebrew-only, RTL football draft app for one group. Not a public product.
 
@@ -67,14 +67,17 @@ complete draft with a 21-player list and again with an 18-player list pasted
 exactly as WhatsApp produces it (hidden characters and all), and checks, against
 the backend itself:
 
-- joining from the link, one-tap roles, "taken" seats, roles surviving refresh
+- no codes anywhere, unequal lists refused, three-tap captain setup
+- the link opening on the board with *באיזו קבוצה אתה?*, one-tap teams, "taken"
+  teams, teams surviving refresh, the fixed red → white → black order
 - every device agreeing on whose turn it is at every pick, snake order exactly
   `1 2 3 3 2 1 …`, only the captain on the clock able to pick
 - two tabs confirming at the same instant → exactly one pick
-- refresh mid-draft, a phone going offline and catching up, a captain moving to a
-  new phone, the host moving to a new phone
+- organizer undo reaching every phone, refresh mid-draft, a phone going offline
+  and catching up, a captain moving to a new phone, the organizer moving to a
+  new phone
 - a missing captain (host starts without them and picks for them), a late captain
-  joining mid-draft, host undo, watchers unable to reset
+  joining mid-draft, only the organizer able to reset, restart with a new list
 - every team the same size, every player drafted once, identical final teams on
   every device, and the published WhatsApp text
 
@@ -167,53 +170,54 @@ and nothing can drift out of sync.
   similar names cannot corrupt picks or undo.
 - **Snake order** over 3 teams: `1 2 3 3 2 1 1 2 3 …`, computed from the number of
   picks made.
-- **Roles, not accounts.** Opening the link shows one question — *מי אתה?* — with
-  a card per seat naming its captain ("קפטן אדום · יוסי"), the host seat, and
-  "אני רק צופה". One tap and you are in. Seats are claims in `participants`
-  (`{id, nick, teamId}` keyed by a per-device id in `localStorage`), so a refresh
-  goes straight back in. Watching writes nothing; it is remembered locally.
-- **A taken seat says so**, with "זה אני — המשך כאן" under it. That one tap moves
-  the seat to this phone (new phone, cleared browser, link opened in a different
-  app); the old phone is told and drops back to the role picker. Tapping your own
-  chip in the top bar reopens the picker to switch seats.
-- **Host** is `hostId` — whoever created the game, until someone taps "זה אני" on
-  the host seat (a write that changes `hostId` alone, the only shape the rules
-  allow for it). One phone may be host and a captain at once. Only the host
-  selects captains, starts the draft, undoes a pick, or frees a seat.
+- **Organizer** is `hostId` — the phone that created the draft, remembered by
+  its per-device id in `localStorage`. Nothing to choose, no code. The organizer
+  pastes the list, taps three captains (kits follow tap order: red, white, black,
+  changeable in the review rows), taps *מוכן — שתף את הדראפט*, and sends the link.
+  Only the organizer starts the draft, undoes a pick, frees a seat, or resets.
+- **Captains join in one tap.** The link opens the live board — teams, captains,
+  players, status — with one question above it, *באיזו קבוצה אתה?*, and a big card
+  per team ("אדום · יוסי"). A tap claims the seat (a claim in `participants`, keyed
+  by the device id), so a refresh goes straight back in. Everyone else taps
+  "אני לא קפטן — רק צופה", which writes nothing and is remembered locally.
+- **A taken team says so**, with "זה אני — המשך כאן" under it: one tap moves the
+  seat to this phone (new phone, cleared browser, link opened in another app). The
+  old phone is told and is asked again. A captain changes team from the top-bar chip.
+- **Organizer on another phone:** "אני המארגן — המשך בטלפון הזה" in the ⋯ menu,
+  one tap — a write that changes `hostId` alone, the only shape the rules allow.
+- **Fixed snake order:** red, white, black, black, white, red, … — the kit the
+  organizer gives a captain decides when they pick.
 - **Picking** is local until confirmed: tap a player, then "בחר אותו" in the sheet.
   That writes one transaction pinned to the pick number the captain was looking
   at, so a stale screen, a double tap, or two tabs of the same captain can never
   record a pick twice or in the wrong slot. The picking phone shows the pick
   instantly while it saves.
-- **Resetting is open to the host and every captain** — not to watchers, who may
-  be the whole WhatsApp group — from the menu in the top bar, at two depths, each
-  behind its own explicit "are you sure?" sheet:
+- **Resetting is the organizer's**, from the ⋯ menu, at two depths, each behind
+  its own explicit "are you sure?" sheet:
   - *אפס את כל הבחירות* — the picks go, the captains and teams stay, everyone
     lands back in the lobby.
   - *התחל מאפס — רשימה חדשה* — the evening starts over from the player list
-    itself. You edit the roster (prefilled with the current names), and one write
-    replaces it, clears the teams and picks, and puts everyone back on captain
-    selection. Same game code and same link, so nobody has to be re-invited; and
-    because captain selection is host-only, whoever restarts becomes the host.
-
-  A draft that needed restarting while the host was out of the room used to stall
-  the whole evening. Undo stays host-only: it is a quiet, surgical change, where
-  a reset is loud and obvious.
+    itself. The organizer edits the roster (prefilled with the current names), and
+    one write replaces it, clears the teams, seats and picks, and goes back to
+    captain selection. Same link, so nobody has to be re-invited.
 - **Captains** control only their own team's turn. If a team has no captain the
-  host can pick for it, so a missing captain can never stall a draft: the host
-  can start without them, free a seat whose captain left, and the captain can
-  take the seat back at any point.
-- **Any roster size from 6 to 21** — teams come out even when the count divides
-  by three (18 → 6 each). Pasting from WhatsApp is safe: list numbers, bullets
-  and the invisible characters WhatsApp adds are stripped.
-- `hostKey` is still generated (the rules require the field) but no longer shown;
-  host recovery is the one-tap takeover above.
+  organizer picks for it, so a missing captain can never stall a draft: the
+  organizer can start without them, free a seat whose captain left, and the
+  captain can take the seat back at any point.
+- **Equal teams only:** 6, 9, 12, 15, 18 or 21 players, so every team ends with
+  its captain plus the same number of picks (18 → 6 each). Any other count is
+  refused on the paste screen with the fix spelled out. Pasting from WhatsApp is
+  safe: list numbers, bullets and the invisible characters WhatsApp adds are
+  stripped.
+- `hostKey` is still generated (the rules require the field) but never shown, and
+  the game id lives only in the link — nobody sees or types a code.
 
 ## Known limitations
 
 - **No authentication, on purpose.** Identity is a per-device id in
-  `localStorage`, and anyone holding the link can take a seat over with one tap —
-  that is the recovery story, and the right trade for a group of friends. The
+  `localStorage`, and anyone holding the link can take a seat (or the organizer
+  role) over with one tap — that is the recovery story, and the right trade for a
+  group of friends. The
   rules make deletion impossible and keep the document's shape, and the roster can
   only change in a write that winds the game back to captain selection. Turn
   ownership is enforced inside Firestore transactions, so a group member with
@@ -222,5 +226,5 @@ and nothing can drift out of sync.
   Chromium at iPhone and Android dimensions.
 - **Legacy games are frozen.** Documents created before schema 2 remain readable but
   cannot be modified or deleted by any client.
-- Maximum 21 players, minimum 6. Duplicate names are rejected with an explanation
-  rather than silently accepted.
+- 6–21 players in multiples of three. Duplicate names are rejected with an
+  explanation rather than silently accepted.

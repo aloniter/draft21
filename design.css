@@ -945,13 +945,16 @@ a.btn { text-decoration: none; }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .role--taken { opacity: .92; }
 .role--taken .shirt { filter: grayscale(.35) drop-shadow(0 3px 8px rgba(0,0,0,.5)); }
-.role__crown {
-  width: 40px; height: 40px; flex: none;
-  display: grid; place-items: center;
-  border-radius: 12px;
-  color: #FFDC7A;
-  background: linear-gradient(150deg, rgba(255,220,122,.18), rgba(255,220,122,.04));
-  border: 1px solid rgba(255,220,122,.28);
+.role .role__kicker { color: var(--team); letter-spacing: 0; font-size: 14px; }
+[data-team="Black"] .role__kicker { color: var(--ink-2); }
+
+/* "באיזו קבוצה אתה?" — sits above the live board for anyone who has not
+   answered yet, framed so it reads as the one thing to do on arrival. */
+.ask {
+  padding: 16px;
+  border-radius: var(--r-card);
+  background: linear-gradient(160deg, rgba(216,255,62,.10), rgba(216,255,62,.02));
+  border: 1px solid rgba(216,255,62,.30);
 }
 /* "It's me — continue on this phone": the whole recovery story for a new
    phone or a lost browser, so it is a real target, not small print. */
@@ -967,7 +970,6 @@ a.btn { text-decoration: none; }
   font-size: 13px; font-weight: 750; color: var(--ink);
 }
 .role__takeover:active { transform: scale(.97); }
-.role__takeover--inline { flex: none; align-self: center; margin-block-start: 0; }
 
 /* Compact variant, used where claiming is a secondary affordance rather
    than the point of the screen. */
@@ -975,20 +977,6 @@ a.btn { text-decoration: none; }
 .slot--compact .shirt { width: 34px; height: 34px; }
 .slot--compact .slot__title { font-size: 15px; }
 .slot--compact .slot__sub { font-size: 12px; }
-
-.people { display: flex; flex-wrap: wrap; gap: 7px; }
-.person {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  padding: 6px 12px 6px 8px;
-  border-radius: var(--r-pill);
-  background: var(--pitch-850);
-  border: 1px solid var(--line);
-  font-size: 13px;
-  font-weight: 700;
-}
-.person--me { border-color: rgba(216,255,62,.45); background: rgba(216,255,62,.09); }
 
 .avatar {
   width: 24px; height: 24px;
@@ -1033,24 +1021,40 @@ a.btn { text-decoration: none; }
   box-shadow: 0 6px 22px -8px rgba(255,197,61,.7);
 }
 
-/* Colour picker: three shirts per captain, one tap each. */
-.shirtpick { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-.shirtopt {
-  display: flex; flex-direction: column; align-items: center; gap: 5px;
-  padding: 11px 6px;
-  border-radius: var(--r-chip);
+/* Setup review: one row per captain, in pick order, with the three kits
+   beside the name. The row takes the colour of the kit it holds. */
+.assign {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px;
+  border-radius: 16px;
+  background:
+    linear-gradient(100deg, color-mix(in srgb, var(--team) 16%, transparent), transparent 70%),
+    var(--pitch-850);
+  border: 1px solid var(--line);
+}
+.assign__name { flex: 1; min-width: 0; display: inline-flex; align-items: center; gap: 6px;
+  font-size: 16.5px; font-weight: 800; color: var(--ink); }
+.assign__name svg { color: #FFDC7A; flex: none; }
+.assign__name span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.assign__team { font-size: 13px; color: var(--ink-2); flex: none; }
+.assign__kits { display: flex; gap: 6px; flex: none; }
+.kitbtn {
+  width: 44px; height: 44px;
+  display: grid; place-items: center;
+  border-radius: 12px;
   background: var(--pitch-800);
   border: 1.5px solid var(--line);
-  font-size: 12.5px; font-weight: 750; color: var(--ink-2);
-  transition: transform var(--d-fast) var(--ease);
+  opacity: .55;
+  transition: transform var(--d-fast) var(--ease), opacity var(--d) var(--ease);
 }
-.shirtopt:active { transform: scale(.95); }
-.shirtopt--on {
+.kitbtn:active { transform: scale(.94); }
+.kitbtn--on {
+  opacity: 1;
   border-color: var(--team);
-  background: color-mix(in srgb, var(--team) 15%, var(--pitch-800));
-  color: var(--ink);
-  box-shadow: 0 0 0 1px var(--team), 0 8px 26px -12px var(--team-glow);
+  background: color-mix(in srgb, var(--team) 16%, var(--pitch-800));
+  box-shadow: 0 0 0 1px var(--team), 0 6px 18px -8px var(--team-glow);
 }
+[data-team="Black"].kitbtn--on { border-color: #9AA8BB; box-shadow: 0 0 0 1px #9AA8BB; }
 
 /* The three kits, fanned. Pure identity — it says "football, three teams"
    before a single word is read. */
@@ -1092,6 +1096,8 @@ a.btn { text-decoration: none; }
   font-size: 13px; font-weight: 700;
 }
 .preview__name--dupe { background: rgba(255,94,94,.16); color: #FF9B9B; }
+/* The lobby's "who is in tonight" list: never scrolls inside itself. */
+.preview--open { max-height: none; overflow: visible; }
 
 .problem {
   display: flex; gap: 9px;

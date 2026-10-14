@@ -213,9 +213,19 @@ let game2 = '';
 
 try {
   /* ---------------- 1. Create ---------------- */
-  section('1. Host creates the draft');
+  section('1. The organizer creates the draft');
   await host.goto(BASE + QUERY);
-  await host.locator('button', { hasText: 'משחק חדש' }).click();
+  check('home has one action — no codes, no "join with code"',
+    await host.locator('button', { hasText: /קוד/ }).count() === 0 && await host.locator('[data-new-draft]').count() === 1);
+  await host.locator('[data-new-draft]').click();
+
+  // Teams must come out equal: a list that does not split into three is
+  // refused before anything is created, with the fix spelled out.
+  await host.locator('#playerInput').fill(ROSTER.slice(0, ROSTER.length - 2).concat(['x1']).join('\n'));
+  check('a list that cannot make equal teams is refused, with the fix spelled out',
+    await host.locator('[data-create-game]').isDisabled() &&
+    /כדי שהקבוצות יהיו שוות/.test(await host.locator('[data-import-problem]').first().innerText()));
+
   await host.locator('#playerInput').fill(PICK.text);
   await shot(host, '00-paste-list');
   const createLabel = await host.locator('[data-create-game]').innerText();
@@ -223,22 +233,24 @@ try {
   await host.locator('[data-create-game]').click();
   await host.waitForSelector('.namegrid', { timeout: T });
   gameId = (await host.evaluate(() => location.hash.slice(1)));
-  check('game created and opened on captain selection', /^[a-z0-9]{6}$/.test(gameId), gameId);
+  check('draft created and opened on captain selection', /^[a-z0-9]{6}$/.test(gameId), gameId);
   console.log(`        game id: ${gameId}`);
 
   for (const name of [CAPTAINS.Red, CAPTAINS.White, CAPTAINS.Black]) {
     await host.locator('.namebtn', { hasText: new RegExp('^' + name + '$') }).click();
   }
   const finalize = host.locator('[data-finalize]');
-  check('three taps choose the captains — colours auto-assigned, ready to open', await finalize.isEnabled());
+  check('three taps choose the captains — kits in tap order, review shown, "ready — share" enabled',
+    await finalize.isEnabled() && /מוכן/.test(await finalize.innerText()) && await host.locator('[data-review] .assign').count() === 3);
   await shot(host, '01-host-captains');
   await finalize.click();
   await host.waitForSelector('[data-invite]', { timeout: T });
   const inviteHref = await host.locator('[data-share-invite]').getAttribute('href');
   const inviteText = decodeURIComponent((inviteHref || '').replace('https://wa.me/?text=', ''));
-  check('lobby offers a one-tap WhatsApp invite carrying the game link',
+  check('lobby offers a one-tap WhatsApp invite carrying the link',
     inviteHref.startsWith('https://wa.me/?text=') && inviteText.includes(`/index.html#${gameId}`), inviteText);
-  check('host lands in the lobby without typing a name', await host.locator('[data-me]').innerText().then(t => t.includes('מנהל')));
+  check('no code is shown anywhere', !(await host.locator('body').innerText()).toUpperCase().includes(gameId.toUpperCase()));
+  check('the organizer is the organizer without choosing anything', await host.locator('[data-me]').innerText().then(t => t.includes('מארגן')));
   await shot(host, '02-host-lobby');
 
   let g = await readGame(host, gameId);
@@ -252,7 +264,7 @@ try {
     ['Red', 'White', 'Black'].every(c => teamOf(c).captainId === captainIdOf(c)));
 
   /* ---------------- 2. Join ---------------- */
-  section('2. Captains open the link and choose a role');
+  section('2. Captains open the link and tap their team');
   const cap = {
     Red: await device('red', iphone),
     White: await device('white', small),
@@ -261,35 +273,41 @@ try {
   const watcher = await device('watcher', small);
 
   await cap.Red.goto(gameUrl(gameId));
-  await cap.Red.waitForSelector('[data-role-picker]', { timeout: T });
-  check('link opens straight onto the role picker', true);
-  check('role card names the captain', (await cap.Red.locator('[data-role="Red"]').innerText()).includes(CAPTAINS.Red));
-  await shot(cap.Red, '03-role-picker');
-  check('role picker fits a phone without side-scroll', await noSideScroll(cap.Red));
-  await cap.Red.locator('[data-role="Red"]').click();
+  await cap.Red.waitForSelector('[data-team-question]', { timeout: T });
+  check('the link opens on the board — three teams, captain names, players — with one question',
+    (await cap.Red.locator('[data-seat]').count()) === 3 &&
+    (await cap.Red.locator('.preview__name').count()) === ROSTER.length - 3 &&
+    /באיזו קבוצה אתה/.test(await cap.Red.locator('[data-team-question]').innerText()));
+  check('each team card names its captain',
+    (await Promise.all(['Red', 'White', 'Black'].map(c => cap.Red.locator(`[data-join="${c}"]`).innerText()))).every((t, i) => t.includes(CAPTAINS[['Red', 'White', 'Black'][i]])));
+  await shot(cap.Red, '03-team-question');
+  check('the question fits a phone without side-scroll', await noSideScroll(cap.Red));
+  await cap.Red.locator('[data-join="Red"]').click();
   await cap.Red.waitForSelector('[data-seat="Red"].slot--mine', { timeout: T });
-  check('red captain is in after one tap', true);
+  check('red captain is in after one tap — the question is gone', await cap.Red.locator('[data-team-question]').count() === 0);
 
   await watcher.goto(gameUrl(gameId));
-  await watcher.waitForSelector('[data-role="Red"].role--taken', { timeout: T });
-  check('an occupied role shows clearly as taken, with a takeover option',
-    await watcher.locator('[data-takeover="Red"]').count() === 1);
-  await shot(watcher, '04-role-taken');
+  await watcher.waitForSelector('[data-join="Red"].role--taken', { timeout: T });
+  check('a taken team says so, with "it\'s me — continue here" for a new phone',
+    await watcher.locator('[data-reclaim="Red"]').count() === 1);
+  await shot(watcher, '04-team-taken');
 
   await Promise.all(['White', 'Black'].map(async c => {
     await cap[c].goto(gameUrl(gameId));
-    await cap[c].waitForSelector('[data-role-picker]', { timeout: T });
-    await cap[c].locator(`[data-role="${c}"]`).click();
+    await cap[c].waitForSelector('[data-team-question]', { timeout: T });
+    await cap[c].locator(`[data-join="${c}"]`).click();
     await cap[c].waitForSelector(`[data-seat="${c}"].slot--mine`, { timeout: T });
   }));
   check('white and black captains joined at the same time', true);
 
-  await watcher.locator('[data-role-watch]').click();
+  await watcher.locator('[data-watch]').click();
   await watcher.waitForSelector('[data-waiting-start]', { timeout: T });
-  check('"just watching" goes straight to the live lobby', true);
+  check('"not a captain — just watching" hides the question and shows the board',
+    await watcher.locator('[data-team-question]').count() === 0);
 
-  await host.waitForFunction(() => /3\s*מתוך\s*3/.test(document.querySelector('[data-lobby-count]')?.textContent || ''), null, { timeout: T });
-  check('host sees all three captains arrive live', await host.locator('[data-start-draft]').isEnabled());
+  await host.waitForFunction(() => /כל הקפטנים מחוברים/.test(document.querySelector('[data-lobby-count]')?.textContent || ''), null, { timeout: T });
+  check('organizer sees red, white and black captains connected live',
+    await host.locator('[data-seat-state="taken"]').count() === 3 && await host.locator('[data-start-draft]').isEnabled());
 
   g = await readGame(host, gameId);
   check('backend: exactly one claim per team', g.participants.length === 3 &&
@@ -298,7 +316,7 @@ try {
   // Remembered locally: a refresh goes straight back in.
   await cap.White.reload();
   await cap.White.waitForSelector('[data-seat="White"].slot--mine', { timeout: T });
-  check('refresh keeps the role — no picker, no re-joining', await cap.White.locator('[data-role-picker]').count() === 0);
+  check('refresh keeps the team — no question, no re-joining', await cap.White.locator('[data-team-question]').count() === 0);
   await watcher.reload();
   await watcher.waitForSelector('[data-waiting-start]', { timeout: T });
   check('refresh keeps "just watching" too', true);
@@ -311,7 +329,7 @@ try {
   check('everyone sees the draft start', true);
   g = await readGame(host, gameId);
   const order = g.turn.order.map(id => g.teams.find(t => t.id === id).color);
-  console.log(`        draft order: ${order.join(' → ')}`);
+  check('draft order is red → white → black, then back', order.join() === 'Red,White,Black', order.join(' → '));
 
   const expectedColor = n => {
     const cycle = n % 6;
@@ -388,14 +406,14 @@ try {
     if (!takeoverDone && n >= 6 && color !== 'Red') {
       const newRed = await device('red-new-phone', iphone);
       await newRed.goto(gameUrl(gameId));
-      await newRed.waitForSelector('[data-takeover="Red"]', { timeout: T });
-      await newRed.locator('[data-takeover="Red"]').click();
-      await newRed.waitForSelector('[data-turn-banner]', { timeout: T });
-      await redPage.waitForSelector('[data-role-picker]', { timeout: T });
-      check('takeover: new phone becomes Red in one tap; old phone drops to the role picker', true);
-      check('takeover: old phone is told why', /עבר לטלפון אחר/.test(await toastText(redPage)), await toastText(redPage));
+      await newRed.waitForSelector('[data-reclaim="Red"]', { timeout: T });
+      await newRed.locator('[data-reclaim="Red"]').click();
+      await newRed.waitForSelector('[data-me][data-team="Red"]', { timeout: T });
+      await redPage.waitForSelector('[data-team-question]', { timeout: T });
+      check('new phone: one tap on "it\'s me" and it is Red; the old phone is asked again', true);
+      check('the old phone is told why', /עבר לטלפון אחר/.test(await toastText(redPage)), await toastText(redPage));
       const old = redPage;
-      await old.locator('[data-role-watch]').click();
+      await old.locator('[data-watch]').click();
       await old.waitForSelector('[data-turn-banner]', { timeout: T });
       everyone[everyone.indexOf(old)] = newRed;
       everyone.push(old);
@@ -404,12 +422,29 @@ try {
       await waitPickNo(newRed, n + 1);
     }
 
+    // The organizer undoes a pick: it comes off every board and the same
+    // captain is on the clock again.
+    if (n === 4) {
+      const undone = await picker.locator('[data-pick-player]').first().getAttribute('data-pick-player');
+      await picker.locator(`[data-pick-player="${undone}"]`).click();
+      await picker.locator('[data-confirm-pick]').click();
+      await Promise.all(live.map(p => waitPickNo(p, n + 2)));
+      await picker.waitForFunction(() => !document.querySelector('[data-saving]'), null, { timeout: T });
+      await host.locator('button[aria-label="כלי מארגן"]').click();
+      await host.locator('[data-undo]').click();
+      await Promise.all(live.map(p => waitPickNo(p, n + 1)));
+      const back = await Promise.all(live.map(p => p.locator(`[data-pick-player="${undone}"]`).count()));
+      const huds = await Promise.all(live.map(hudState));
+      check('organizer undo: the pick is back in the pool on every phone, same captain on the clock',
+        back.every(c => c === 1) && huds.every(h => h && h.color === color && h.pickNo === n + 1));
+    }
+
     // Refresh in the middle of the draft — a captain and the host.
     if (!refreshDone && n === 5) {
       await Promise.all([cap.Black.reload(), host.reload()]);
       await Promise.all([waitPickNo(cap.Black, n + 1), waitPickNo(host, n + 1)]);
       check('refresh mid-draft: same pick, same turn, role kept, nothing lost',
-        (await cap.Black.locator('[data-role-picker]').count()) === 0 &&
+        (await cap.Black.locator('[data-team-question]').count()) === 0 &&
         (await cap.Black.locator('[data-roster-player]').count()) === 3 + n);
       refreshDone = true;
     }
@@ -504,7 +539,7 @@ try {
   section('6. A captain is missing — the draft still runs');
   const host2 = await device('host2', pixel);
   await host2.goto(BASE + QUERY);
-  await host2.locator('button', { hasText: 'משחק חדש' }).click();
+  await host2.locator('[data-new-draft]').click();
   await host2.locator('#playerInput').fill(['אלון', 'יוסי', 'דני', 'משה', 'רועי', 'אבי', 'גל', 'תומר', 'ניר'].join('\n'));
   await host2.locator('[data-create-game]').click();
   await host2.waitForSelector('.namegrid', { timeout: T });
@@ -515,7 +550,7 @@ try {
 
   const red2 = await device('red2', small);
   await red2.goto(gameUrl(game2));
-  await red2.locator('[data-role="Red"]').click();
+  await red2.locator('[data-join="Red"]').click();
   await red2.waitForSelector('[data-seat="Red"].slot--mine', { timeout: T });
 
   check('start is held while captains are missing', await host2.locator('[data-start-draft]').isDisabled());
@@ -538,7 +573,7 @@ try {
       // The White captain turns up mid-draft and takes their seat.
       const white2 = await device('white2', iphone);
       await white2.goto(gameUrl(game2));
-      await white2.locator('[data-role="White"]').click();
+      await white2.locator('[data-join="White"]').click();
       await white2.waitForSelector('[data-turn-banner]', { timeout: T });
       check('a late captain joins mid-draft with one tap', true);
       await white2.close();
@@ -557,29 +592,30 @@ try {
   const made2 = g2.picks.length;
   check('picks by host and captain recorded in order', made2 >= 2 && g2.picks.every((p, i) => p.seq === i), String(made2));
 
-  await host2.locator('button[aria-label="כלי מנהל"]').click();
+  await host2.locator('button[aria-label="כלי מארגן"]').click();
   await host2.locator('[data-undo]').click();
   await waitPickNo(red2, made2);
   check('host undo removes the last pick for everyone', (await readGame(host2, game2)).picks.length === made2 - 1);
 
-  // A watcher's menu cannot wipe the draft.
+  // Only the organizer can wipe the draft — not a watcher, not a captain.
   const viewer2 = await device('viewer2', small);
   await viewer2.goto(gameUrl(game2));
-  await viewer2.locator('[data-role-watch]').click();
+  await viewer2.locator('[data-watch]').click();
   await viewer2.waitForSelector('[data-turn-banner]', { timeout: T });
   await viewer2.locator('button[aria-label="אפשרויות"]').click();
-  check('watchers get no reset button', await viewer2.locator('[data-reset]').count() === 0);
-  await viewer2.locator('[data-change-role]').click();
-  await viewer2.waitForSelector('[data-role-picker]', { timeout: T });
+  await red2.locator('button[aria-label="אפשרויות"]').click();
+  check('watchers and captains get no reset in their menu',
+    await viewer2.locator('[data-reset]').count() === 0 && await red2.locator('[data-reset]').count() === 0);
+  await red2.locator('[data-host-menu] button[aria-label="סגירה"]').click();
 
-  // The host hands over to another phone from the role picker.
-  await viewer2.locator('[data-takeover="host"]').click();
-  await viewer2.waitForFunction(() => /מנהל/.test(document.querySelector('[data-me]')?.textContent || ''), null, { timeout: T });
-  await host2.waitForFunction(() => (window.__toasts || []).some(t => /ניהול הדראפט עבר/.test(t)), null, { timeout: T });
-  check('host role moves to another phone in one tap, and the old phone is told', true);
+  // The organizer's phone is gone: one tap in the menu continues on another.
+  await viewer2.locator('[data-takeover-host]').click();
+  await viewer2.waitForFunction(() => /מארגן/.test(document.querySelector('[data-me]')?.textContent || ''), null, { timeout: T });
+  await host2.waitForFunction(() => (window.__toasts || []).some(t => /המארגן ממשיך/.test(t)), null, { timeout: T });
+  check('the organizer continues on another phone with one tap — no code — and the old phone is told', true);
 
   // Start the evening over from a new list, on the same link.
-  await viewer2.locator('button[aria-label="כלי מנהל"]').click();
+  await viewer2.locator('button[aria-label="כלי מארגן"]').click();
   await viewer2.locator('[data-restart-roster]').click();
   await viewer2.locator('#playerInput').fill(['אלון', 'יוסי', 'דני', 'משה', 'רועי', 'אבי'].join('\n'));
   await viewer2.locator('[data-restart-submit]').click();

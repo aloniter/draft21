@@ -1,5 +1,36 @@
 # Changelog
 
+## One organizer, three captains, one link — 2026-10-14
+
+A second pass that strips the flow down to exactly what an evening needs.
+
+- **No codes anywhere.** The home screen has one button, *דראפט חדש*; "join with
+  code" is gone, and the game id appears only inside the link.
+- **The organizer is whoever created the draft** — remembered on that phone, never
+  chosen. The host card and host role are gone from what everyone else sees; the
+  one-tap "אני המארגן — המשך בטלפון הזה" fallback lives in the ⋯ menu only.
+- **Setup in under a minute:** paste → tap three captains (red, white, black in tap
+  order) → a review row per captain with the three kits beside the name → *מוכן —
+  שתף את הדראפט* → *שלח בוואטסאפ*.
+- **Captains join from the board, not a gate.** The link opens the live lobby or
+  draft — teams, captains, players, status — with *באיזו קבוצה אתה?* above it and
+  a large card per team. One tap. Taken teams say so with "זה אני — המשך כאן".
+  "אני לא קפטן — רק צופה" folds the question away for everyone else. Replaces the
+  full-screen role picker.
+- **Organizer lobby** lists *קפטן אדום · …* with *מחובר* / *ממתין*; *התחל דראפט*
+  unlocks at three of three (start-without-them stays as a small link).
+- **Fixed snake order: red → white → black → black → white → red.** The random /
+  manual order controls are gone; the kit a captain gets decides when they pick.
+- **Equal teams only.** The list must split into three equal teams (6, 9, 12, 15,
+  18 or 21); anything else is refused on the paste screen with the fix spelled out.
+- **Reset is the organizer's alone.** Captains' menus offer only "change team".
+- Organizer wording throughout (*מארגן*); no schema or rules change.
+
+Verified: emulator 21 players 72/72 and the 18-player WhatsApp list 69/69;
+production Firestore 18 players 69/69 — including organizer undo on all phones,
+two tabs racing for one pick, refresh, offline/reconnect, a captain and the
+organizer each moving to a new phone, and the publish link.
+
 ## One link, one tap — live multiplayer pass — 2026-10-14
 
 The whole evening is now: create → send one link → everyone taps who they are →
