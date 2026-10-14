@@ -347,6 +347,9 @@ svg { display: block; }
 }
 .me__role { font-size: 10px; font-weight: 800; color: var(--ink-3); letter-spacing: .06em; }
 .me--volt { background: rgba(216,255,62,.14); border-color: rgba(216,255,62,.4); }
+/* During a live game the chip is also the "change my role" control. */
+button.me { cursor: pointer; text-align: start; }
+button.me:active { transform: scale(.97); }
 
 /* ---------------------------------------------------------------- */
 /* 6. Buttons                                                        */
@@ -387,6 +390,8 @@ svg { display: block; }
   opacity: 1;
 }
 .btn--block { display: flex; width: 100%; }
+/* Share actions are real links (in-app browsers block scripted pop-ups). */
+a.btn { text-decoration: none; }
 .btn--lg { min-height: 58px; font-size: 18px; border-radius: 18px; }
 .btn--sm { min-height: 38px; font-size: 14px; padding-inline: 14px; border-radius: 12px; }
 .btn--xs { min-height: 30px; font-size: 12px; padding-inline: 10px; border-radius: 10px; font-weight: 700; }
@@ -794,6 +799,13 @@ svg { display: block; }
 }
 .pick--live:active { transform: scale(.955); background: var(--volt); }
 .pick:disabled { cursor: default; }
+/* The tapped-but-unconfirmed player, under the confirm sheet. */
+.pick--sel,
+.pick--live.pick--sel { background: var(--volt); color: var(--volt-ink); box-shadow: 0 0 0 3px rgba(216,255,62,.35); }
+
+/* A confirmed pick on its way to the server: already in place, breathing
+   until the server's copy replaces it (normally well under a second). */
+.is-saving { animation: saving 1.1s var(--ease) infinite alternate; }
 
 .pool-empty {
   padding: 22px;
@@ -924,6 +936,38 @@ svg { display: block; }
 .slot__title { font-size: 17px; font-weight: 800; letter-spacing: -.02em; }
 .slot__sub { font-size: 13px; font-weight: 650; color: var(--ink-2); margin-block-start: 2px; }
 .slot__cta { flex: none; }
+
+/* Role picker — the front door. Each seat names the person it belongs to,
+   so a captain recognises their own name rather than decoding a colour. */
+.role { min-height: 92px; }
+.role__kicker { font-size: 12px; font-weight: 800; letter-spacing: .06em; color: var(--ink-label); }
+.role__name { font-size: 22px; line-height: 1.15; font-weight: 850; letter-spacing: -.03em;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.role--taken { opacity: .92; }
+.role--taken .shirt { filter: grayscale(.35) drop-shadow(0 3px 8px rgba(0,0,0,.5)); }
+.role__crown {
+  width: 40px; height: 40px; flex: none;
+  display: grid; place-items: center;
+  border-radius: 12px;
+  color: #FFDC7A;
+  background: linear-gradient(150deg, rgba(255,220,122,.18), rgba(255,220,122,.04));
+  border: 1px solid rgba(255,220,122,.28);
+}
+/* "It's me — continue on this phone": the whole recovery story for a new
+   phone or a lost browser, so it is a real target, not small print. */
+.role__takeover {
+  display: inline-flex; align-items: center; gap: 6px;
+  align-self: flex-start;
+  margin-block-start: 8px;
+  min-height: 36px;
+  padding: 6px 12px;
+  border-radius: 11px;
+  background: var(--pitch-700);
+  border: 1px solid var(--line-2);
+  font-size: 13px; font-weight: 750; color: var(--ink);
+}
+.role__takeover:active { transform: scale(.97); }
+.role__takeover--inline { flex: none; align-self: center; margin-block-start: 0; }
 
 /* Compact variant, used where claiming is a secondary affordance rather
    than the point of the screen. */
@@ -1198,6 +1242,11 @@ body.has-connbar .appbar { visibility: hidden; }
 
 @keyframes fall {
   to { transform: translateY(105vh) rotate(420deg); opacity: 0; }
+}
+
+@keyframes saving {
+  from { opacity: 1; }
+  to   { opacity: .5; }
 }
 
 @keyframes shimmer {

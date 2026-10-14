@@ -1,8 +1,12 @@
 # Draft21
 
-כלי דראפט פרטי לקבוצת הכדורגל שלנו. המנהל מדביק את רשימת השחקנים של אותו שבוע,
-בוחר 3 קפטנים, וכל הקפטנים בוחרים שחקנים בתורות בזמן אמת. כולם יכולים לעקוב.
-בסוף הדראפט האפליקציה מייצרת את שלוש הקבוצות ומאפשרת לשתף אותן לוואטסאפ.
+כלי דראפט פרטי לקבוצת הכדורגל שלנו. המנהל מדביק את רשימת השחקנים של אותו שבוע
+(6–21 שחקנים, ישר מוואטסאפ), מסמן 3 קפטנים, ושולח קישור אחד לקבוצה. מי שפותח את
+הקישור בוחר מי הוא בלחיצה אחת — קפטן אדום / לבן / שחור, מנהל, או צופה — בלי הרשמה
+ובלי סיסמה. הקפטנים בוחרים בתורות (סנייק) בזמן אמת, וכולם רואים את אותו מצב.
+בסוף המנהל מפרסם את הקבוצות לוואטסאפ.
+
+**Create → share one link → tap your role → draft live → final teams.**
 
 A private, Hebrew-only, RTL football draft app for one group. Not a public product.
 
@@ -21,6 +25,7 @@ No build system, no framework, no npm dependencies at runtime.
 | `vendor/` | Vendored Firebase SDK 10.7.1 — see `vendor/README.md` |
 | `firestore.rules` | Security rules |
 | `verify-rules.mjs` | Verifies the deployed rules from an untrusted client |
+| `tests/` | End-to-end multiplayer test — several phones, one shared Firestore (see below). Never deployed |
 | `DESIGN.md` | Research, the three explored directions, and the design system |
 
 ## Firebase project
@@ -49,6 +54,58 @@ python3 -m http.server 8899
 `?lp=1` forces Firestore long-polling. It is only needed inside automated or
 proxied browsers, whose network stacks break the SDK's streaming-XHR probe and
 leave the listener silently unconnected. Real browsers never need it.
+
+`?emu=127.0.0.1:8080` points the app at a local Firestore emulator. It is honoured
+only when the page itself is served from `localhost`/`127.0.0.1`.
+
+## Testing the real multiplayer experience
+
+`tests/e2e.mjs` drives the real UI in independent browser contexts at phone sizes
+— a host, three captains, a watcher, plus extra tabs and phones for the edge cases
+— all against one shared Firestore with the security rules enforced. It runs a
+complete draft with a 21-player list and again with an 18-player list pasted
+exactly as WhatsApp produces it (hidden characters and all), and checks, against
+the backend itself:
+
+- joining from the link, one-tap roles, "taken" seats, roles surviving refresh
+- every device agreeing on whose turn it is at every pick, snake order exactly
+  `1 2 3 3 2 1 …`, only the captain on the clock able to pick
+- two tabs confirming at the same instant → exactly one pick
+- refresh mid-draft, a phone going offline and catching up, a captain moving to a
+  new phone, the host moving to a new phone
+- a missing captain (host starts without them and picks for them), a late captain
+  joining mid-draft, host undo, watchers unable to reset
+- every team the same size, every player drafted once, identical final teams on
+  every device, and the published WhatsApp text
+
+```bash
+cd tests
+npm install            # firebase-tools + playwright; needs Java for the emulator
+npm test               # both rosters against the local Firestore emulator
+npm run test:prod      # one 18-player run against production Firestore
+```
+
+`test:prod` creates two game documents (ids printed at the end). Clients cannot
+delete games, so remove them from the Firebase console afterwards.
+
+## Deploying the app
+
+The app is static files with no build step, and the game travels in the URL hash
+(`…/#abc123`), so any static HTTPS host works with no rewrites: direct links,
+refreshes and the WhatsApp in-app browser all load `index.html` and open the right
+game. HTTPS is required (service worker).
+
+The site is on **Vercel** (project `draft21`). If the project is connected to this
+GitHub repository, merging to `main` deploys; otherwise run `npx vercel --prod`
+from the repository root. No build settings are needed (framework preset "Other",
+no build command, output = repository root), and `.vercelignore` keeps `tests/`
+and the Firebase tooling out of the deployed site.
+
+The Firestore rules did not change in this release, so nothing needs deploying
+on the Firebase side.
+
+After a deploy, open the site, create a game, and send yourself the link — that
+is the whole smoke test.
 
 ## Deploying the Firestore rules
 
@@ -110,11 +167,27 @@ and nothing can drift out of sync.
   similar names cannot corrupt picks or undo.
 - **Snake order** over 3 teams: `1 2 3 3 2 1 1 2 3 …`, computed from the number of
   picks made.
-- **Host** is whoever created the game (`hostId`). Only the host selects captains,
-  starts the draft, undoes a pick, or releases a team.
-- **Resetting is open to everyone** in the game — host, captain or spectator — from
-  the menu in the top bar, at two depths, each behind its own explicit
-  "are you sure?" sheet rather than a permission check:
+- **Roles, not accounts.** Opening the link shows one question — *מי אתה?* — with
+  a card per seat naming its captain ("קפטן אדום · יוסי"), the host seat, and
+  "אני רק צופה". One tap and you are in. Seats are claims in `participants`
+  (`{id, nick, teamId}` keyed by a per-device id in `localStorage`), so a refresh
+  goes straight back in. Watching writes nothing; it is remembered locally.
+- **A taken seat says so**, with "זה אני — המשך כאן" under it. That one tap moves
+  the seat to this phone (new phone, cleared browser, link opened in a different
+  app); the old phone is told and drops back to the role picker. Tapping your own
+  chip in the top bar reopens the picker to switch seats.
+- **Host** is `hostId` — whoever created the game, until someone taps "זה אני" on
+  the host seat (a write that changes `hostId` alone, the only shape the rules
+  allow for it). One phone may be host and a captain at once. Only the host
+  selects captains, starts the draft, undoes a pick, or frees a seat.
+- **Picking** is local until confirmed: tap a player, then "בחר אותו" in the sheet.
+  That writes one transaction pinned to the pick number the captain was looking
+  at, so a stale screen, a double tap, or two tabs of the same captain can never
+  record a pick twice or in the wrong slot. The picking phone shows the pick
+  instantly while it saves.
+- **Resetting is open to the host and every captain** — not to watchers, who may
+  be the whole WhatsApp group — from the menu in the top bar, at two depths, each
+  behind its own explicit "are you sure?" sheet:
   - *אפס את כל הבחירות* — the picks go, the captains and teams stay, everyone
     lands back in the lobby.
   - *התחל מאפס — רשימה חדשה* — the evening starts over from the player list
@@ -126,21 +199,27 @@ and nothing can drift out of sync.
   A draft that needed restarting while the host was out of the room used to stall
   the whole evening. Undo stays host-only: it is a quiet, surgical change, where
   a reset is loud and obvious.
-- **Captains** control only their own team's turn. If a team has no captain
-  connected the host can pick for it, so a missing captain can never stall a draft.
-- **Host key** — a 4-character code shown only to the host. It moves host control to
-  another device if the host's phone or local storage is lost. Worth saving.
+- **Captains** control only their own team's turn. If a team has no captain the
+  host can pick for it, so a missing captain can never stall a draft: the host
+  can start without them, free a seat whose captain left, and the captain can
+  take the seat back at any point.
+- **Any roster size from 6 to 21** — teams come out even when the count divides
+  by three (18 → 6 each). Pasting from WhatsApp is safe: list numbers, bullets
+  and the invisible characters WhatsApp adds are stripped.
+- `hostKey` is still generated (the rules require the field) but no longer shown;
+  host recovery is the one-tap takeover above.
 
 ## Known limitations
 
-- **No authentication.** Identity is a per-device id in `localStorage`. The rules
-  make deletion and host tampering impossible, and the roster can only change in a
-  write that simultaneously winds the game back to captain selection — so it cannot
-  be edited under a live or finished draft. But "only the captain whose turn it is
-  may pick" is enforced inside Firestore transactions, so a group member with
-  devtools can still act as someone else. Acceptable for a private group.
+- **No authentication, on purpose.** Identity is a per-device id in
+  `localStorage`, and anyone holding the link can take a seat over with one tap —
+  that is the recovery story, and the right trade for a group of friends. The
+  rules make deletion impossible and keep the document's shape, and the roster can
+  only change in a write that winds the game back to captain selection. Turn
+  ownership is enforced inside Firestore transactions, so a group member with
+  devtools could still act as someone else.
 - **Not yet tested on real iOS Safari.** All mobile verification so far was
-  emulated Chromium at iPhone dimensions.
+  Chromium at iPhone and Android dimensions.
 - **Legacy games are frozen.** Documents created before schema 2 remain readable but
   cannot be modified or deleted by any client.
 - Maximum 21 players, minimum 6. Duplicate names are rejected with an explanation

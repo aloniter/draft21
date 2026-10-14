@@ -8,3 +8,5 @@ dist/
 *service-account*
 .firebase/
 .vercel
+tests/screenshots/
+firestore-debug.log

@@ -1,0 +1,8 @@
+# The deployed site is the static shell only. The test harness (and its
+# node_modules) never ships.
+tests/
+verify-rules.mjs
+firestore.rules
+firebase.json
+.firebaserc
+*.md

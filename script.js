@@ -1,7 +1,7 @@
 // The Firebase SDK is vendored under vendor/ so the app shell has no runtime
 // dependency on a CDN. See vendor/README.md before upgrading.
 import { initializeApp } from './vendor/firebase-app.js';
-import { getFirestore, initializeFirestore, doc, onSnapshot, setDoc, runTransaction } from './vendor/firebase-firestore.js';
+import { getFirestore, initializeFirestore, connectFirestoreEmulator, doc, onSnapshot, setDoc, runTransaction } from './vendor/firebase-firestore.js';
 
 const app = initializeApp({
   apiKey: "AIzaSyBqz4oHoqGtnzjWqgzjWmwsUv6Kny75QpM",
@@ -19,6 +19,15 @@ const app = initializeApp({
 const db = /[?&]lp=1\b/.test(location.search)
   ? initializeFirestore(app, { experimentalForceLongPolling: true })
   : getFirestore(app);
+
+// `?emu=127.0.0.1:8080` points the app at a local Firestore emulator, which is
+// how tests/e2e.mjs drives four phones against a real, rules-enforcing backend
+// without touching production. Honoured only when the page itself is served
+// from localhost, so a crafted link can never redirect a real phone elsewhere.
+(function () {
+  const m = /[?&]emu=([\w.-]+):(\d+)/.exec(location.search);
+  if (m && /^(localhost|127\.0\.0\.1)$/.test(location.hostname)) connectFirestoreEmulator(db, m[1], Number(m[2]));
+})();
 
 // Bumped whenever the game document shape changes in a non-backwards-compatible way.
 const SCHEMA = 2;
@@ -151,13 +160,6 @@ function icon(name, size) {
   return '<svg viewBox="0 0 24 24" width="' + s + '" height="' + s + '" fill="currentColor" aria-hidden="true" focusable="false">' + body + '</svg>';
 }
 
-function initials(name) {
-  const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
-  if (!parts.length) return '?';
-  if (parts.length === 1) return parts[0].slice(0, 2);
-  return parts[0].charAt(0) + parts[1].charAt(0);
-}
-
 function renderTeamShirt(color, sizeClass = 'shirt--md', centered = false) {
   const style = TEAM_JERSEY_STYLES[color] || {
     top: '#4A5768',
@@ -200,7 +202,7 @@ function renderTeamShirt(color, sizeClass = 'shirt--md', centered = false) {
 }
 
 let state = {
-  phase: 'setup', input: '', nickname: '', joinCode: '', hostKeyInput: '',
+  phase: 'setup', input: '', joinCode: '',
   clientId: '', captains: [], teamAssignments: {}, draftOrder: [], manualOrder: false,
   gameData: null, gameId: null, unsubscribe: null, loadError: '', loading: false,
   // Two separate connectivity signals, on purpose:
@@ -222,6 +224,23 @@ let state = {
   // confirm() dialog, which some in-app browsers swallow silently.
   // '' | 'picks' (wipe the picks) | 'roster' (start over from the player list).
   confirmReset: '',
+  // watching: this device chose "just watching" for the current game. Watchers
+  // write nothing to the game, so the choice lives in localStorage only.
+  watching: false,
+  // choosingRole: the role picker opened on purpose from the menu, by someone
+  // who already has a role (switching seats, or a host who is also a captain).
+  choosingRole: false,
+  // myRolePrev: the role this device held on the previous snapshot, so losing
+  // it to another phone ("it's me — continue here") can be explained.
+  myRolePrev: '',
+  // selected: the player a captain tapped, waiting for the confirm tap. Local
+  // only — nothing is written until the pick is confirmed, so a phone that
+  // locks halfway through can never leave the draft stuck.
+  selected: null,
+  // inflight: a confirmed pick on its way to Firestore. It is drawn as if it
+  // had already landed, so the pick feels instant; the snapshot that carries it
+  // replaces it, and a rejected write simply takes it back off the screen.
+  inflight: null,
   // rosterEdit: the player list open for editing on a game that already exists,
   // i.e. the first step of a from-scratch restart. Nothing is written until the
   // confirm sheet is accepted, so backing out of here destroys nothing.
@@ -232,6 +251,18 @@ let state = {
   // one would be both wrong and distracting.
   uiPrev: { turnKey: '', picks: -1, phase: '', mine: false, pending: '', hostMenu: false, confirmReset: '' }
 };
+
+function loadWatching(gameId) {
+  try { return !!gameId && localStorage.getItem('d21_watch') === gameId; } catch (e) { return false; }
+}
+
+function setWatching(on) {
+  state.watching = !!on;
+  try {
+    if (on && state.gameId) localStorage.setItem('d21_watch', state.gameId);
+    else localStorage.removeItem('d21_watch');
+  } catch (e) {}
+}
 
 /* ------------------------------------------------------------------ */
 /* Connectivity                                                        */
@@ -339,6 +370,33 @@ function myTeamId(game) {
   return me ? me.teamId || null : null;
 }
 
+// Roles are what the role picker offers: captain of a team (a claim in
+// `participants`) and host (`hostId`). One phone can hold both — the organiser
+// is often a captain too — and a phone with neither is either watching or
+// about to be asked who it is.
+function hasRole(game) {
+  return !!game && (isHost(game) || !!myTeamId(game));
+}
+
+function myRoleKey(game) {
+  if (!game) return '';
+  return (isHost(game) ? 'host' : '') + '|' + (myTeamId(game) || '');
+}
+
+// The role picker is the front door of a live game: anyone arriving by link
+// before or during the draft answers one question — who are you — and is in.
+function needsRole(game) {
+  if (!game || (state.phase !== 'lobby' && state.phase !== 'draft')) return false;
+  if (state.choosingRole) return true;
+  return !hasRole(game) && !state.watching;
+}
+
+// Teams in kit order (red, white, black) wherever they are offered as a
+// choice, so the same seat is always in the same place on every phone.
+function teamsByKit(game) {
+  return (game.teams || []).slice().sort((a, b) => TEAM_COLORS.indexOf(a.color) - TEAM_COLORS.indexOf(b.color));
+}
+
 function teamById(game, teamId) {
   return (game.teams || []).find(t => t.id === teamId) || null;
 }
@@ -390,9 +448,23 @@ function snakePosition(pickCount, orderLength, snake) {
     : { index: 2 * orderLength - 1 - cycle, direction: -1 };
 }
 
+// The game as this device should draw it: the latest snapshot plus a confirmed
+// pick of ours that is still on its way. Everything derived from `picks` —
+// rosters, the pool, whose turn — then moves the instant the captain taps.
+function viewOf(game) {
+  const f = state.inflight;
+  if (!game || !f) return game;
+  const picks = game.picks || [];
+  if (game.status !== 'draft' || picks.length !== f.seq) return game;
+  const pick = { playerId: f.playerId, playerName: f.playerName, teamId: f.teamId, byId: f.byId, seq: f.seq, saving: true };
+  return Object.assign({}, game, { picks: picks.concat([pick]), lastPick: pick });
+}
+
 // Never trusts a stored turn index — always recomputed from picks.
 function getCurrentTurn(game) {
   if (!game || !game.turn || !Array.isArray(game.turn.order) || !game.turn.order.length) return null;
+  // Every pick made: nobody is on the clock, the draft is closing.
+  if ((game.picks || []).length >= totalPicksNeeded(game)) return null;
   const order = game.turn.order;
   const snake = !game.settings || game.settings.snake !== false;
   const pos = snakePosition((game.picks || []).length, order.length, snake);
@@ -434,6 +506,7 @@ function gameRef(id) {
 
 function setGameId(id) {
   state.gameId = id;
+  state.watching = loadWatching(id);
   window.location.hash = id;
   localStorage.setItem('d21_gameId', id);
 }
@@ -475,10 +548,11 @@ function subscribeToGame() {
         // Someone else may have reset (or the draft moved on) while a confirm
         // sheet was open on this device. Drop it rather than leave a stale
         // "are you sure?" over a board that already changed underneath it.
-        if (nextPhase !== state.phase) { state.confirmReset = ''; state.hostMenu = false; }
+        if (nextPhase !== state.phase) { state.confirmReset = ''; state.hostMenu = false; state.choosingRole = false; }
         state.gameData = data;
         state.phase = nextPhase;
         state.loadError = '';
+        settleLocalState(data);
       }
     } else {
       state.gameData = null;
@@ -494,6 +568,37 @@ function subscribeToGame() {
     state.loadError = 'שגיאת חיבור: ' + err.message;
     render();
   });
+}
+
+// Local, unsaved state has to follow the shared state it sits on top of.
+function settleLocalState(data) {
+  // Our in-flight pick has landed (or the draft moved on without it).
+  const f = state.inflight;
+  if (f && ((data.picks || []).length > f.seq || data.status !== 'draft')) state.inflight = null;
+
+  // A tapped-but-unconfirmed player is only meaningful while it is still our
+  // turn on the same pick and the player is still on the shelf.
+  if (state.selected) {
+    const turn = data.status === 'draft' ? getCurrentTurn(data) : null;
+    const still = turn && turn.isMine && (data.picks || []).length === state.selected.seq &&
+      !draftedPlayerIds(data).has(state.selected.playerId);
+    if (!still) state.selected = null;
+  }
+
+  // Someone tapped "it's me — continue here" on another phone. Say so, rather
+  // than silently dropping this phone back to the role picker.
+  const now = myRoleKey(data);
+  const prev = state.myRolePrev;
+  if (prev && now !== prev) {
+    const [prevHost, prevTeam] = prev.split('|');
+    const [nowHost, nowTeam] = now.split('|');
+    // Only a seat now held by someone else counts as "moved"; a reset or a
+    // freed seat is explained by the screen itself.
+    const holder = prevTeam && !nowTeam ? claimantOf(data, prevTeam) : null;
+    if (holder && holder.id !== state.clientId) showNotice('התפקיד שלך עבר לטלפון אחר');
+    else if (prevHost && !nowHost) showNotice('ניהול הדראפט עבר לטלפון אחר');
+  }
+  state.myRolePrev = now;
 }
 
 function rememberCompletedGame(id) {
@@ -517,6 +622,11 @@ function leaveGame() {
   state.hostMenu = false;
   state.confirmReset = '';
   state.rosterEdit = false;
+  state.choosingRole = false;
+  state.myRolePrev = '';
+  state.selected = null;
+  state.inflight = null;
+  state.watching = false;
   state.uiPrev = { turnKey: '', picks: -1, phase: '', mine: false, pending: '', hostMenu: false, confirmReset: '' };
   localStorage.removeItem('d21_gameId');
   localStorage.removeItem('d21_caps');
@@ -563,8 +673,6 @@ async function mutate(label, fn) {
 
 function init() {
   state.clientId = getClientId();
-  const savedNick = localStorage.getItem('d21_nick');
-  if (savedNick) state.nickname = savedNick;
   try {
     const savedCaptains = localStorage.getItem('d21_caps');
     const savedAssignments = localStorage.getItem('d21_assign');
@@ -612,8 +720,12 @@ function init() {
 
 // Strips list numbering and bullets but keeps digits that belong to the name,
 // so "עידן 2" and "R9" survive while "1. עידן" and "2) R9" are cleaned.
+// Invisible characters go first: WhatsApp puts a WORD JOINER (U+2060) after
+// the number of every line in a numbered list, along with bidi marks, and left
+// in place they would ride along inside the name — into the results text and
+// past the duplicate check.
 function cleanRosterLine(line) {
-  let s = String(line).replace(/[‎‏‪-‮⁦-⁩]/g, '').trim();
+  let s = String(line).replace(/[\u00AD\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]/g, '').trim();
   if (!s) return '';
   s = s.replace(/^[-–—•*·]+\s*/, '');
   const numbered = s.replace(/^\d{1,2}\s*[.)\]:\-–]\s*/, '');
@@ -720,6 +832,10 @@ function toggleCaptain(playerId) {
     delete state.teamAssignments[playerId];
   } else if (state.captains.length < 3) {
     state.captains.push(playerId);
+    // Kits are handed out in pick order — red, white, black — so three taps
+    // finish the job. Tapping a shirt afterwards still swaps them.
+    const used = Object.values(state.teamAssignments);
+    state.teamAssignments[playerId] = TEAM_COLORS.find(c => used.indexOf(c) === -1);
   } else {
     showError('כבר נבחרו 3 קפטנים');
     return;
@@ -803,64 +919,73 @@ async function finalizeCaptains() {
   }
 }
 
-async function joinGame() {
-  const nick = state.nickname.trim();
-  if (!nick) { showError('הזן כינוי'); return; }
-  localStorage.setItem('d21_nick', nick);
-  await mutate('שגיאה בהצטרפות', game => {
-    if (['lobby', 'draft', 'complete'].indexOf(game.status) === -1) throw new Error('לא ניתן להצטרף בשלב הזה');
-    const participants = (game.participants || []).map(p => Object.assign({}, p));
-    const existing = participants.find(p => p.id === state.clientId);
-    if (existing) {
-      existing.nick = nick;
-    } else {
-      participants.push({ id: state.clientId, nick, teamId: null, ready: false });
-    }
+// One tap from the role picker. A free seat is simply taken; a taken seat is
+// taken over only when the tap says so ("it's me — continue on this phone"),
+// which is the whole recovery story for a captain who switched phones or lost
+// their browser. Inside a transaction, so two phones racing for one free seat
+// get exactly one winner, and the other is told the seat just went.
+async function claimRole(teamId, takeover) {
+  const ok = await mutate('לא הצלחנו לשמור את התפקיד', game => {
+    if (['lobby', 'draft'].indexOf(game.status) === -1) throw new Error('אי אפשר לבחור תפקיד בשלב הזה');
+    const team = teamById(game, teamId);
+    if (!team) throw new Error('הקבוצה לא קיימת');
+    const holder = claimantOf(game, teamId);
+    if (holder && holder.id === state.clientId) return null;
+    if (holder && !takeover) throw new Error('הקבוצה ' + colorHe(team.color) + ' נתפסה הרגע בטלפון אחר');
+    // participants holds seat claims and nothing else: keep every other seat,
+    // drop this seat's previous holder and whatever seat this phone had.
+    const participants = (game.participants || [])
+      .filter(p => p.teamId && p.teamId !== teamId && p.id !== state.clientId)
+      .map(p => Object.assign({}, p));
+    participants.push({ id: state.clientId, nick: playerName(game, team.captainId), teamId, ready: true });
     return { participants };
   });
+  if (ok) {
+    setWatching(false);
+    state.choosingRole = false;
+    haptic(20);
+    render();
+  }
 }
 
-// Claiming is validated against a fresh read inside the transaction, so two
-// captains tapping the same team at the same moment cannot both succeed:
-// Firestore retries the loser, it re-reads, and it fails with a clear error.
-async function claimTeam(teamId) {
-  await mutate('שגיאה בבחירת קבוצה', game => {
-    if (['lobby', 'draft'].indexOf(game.status) === -1) throw new Error('לא ניתן לבחור קבוצה בשלב הזה');
-    if (!teamById(game, teamId)) throw new Error('קבוצה לא קיימת');
-    const participants = (game.participants || []).map(p => Object.assign({}, p));
-    const me = participants.find(p => p.id === state.clientId);
-    if (!me) throw new Error('הצטרף עם כינוי לפני בחירת קבוצה');
-    const holder = participants.find(p => p.teamId === teamId);
-    if (holder && holder.id !== state.clientId) {
-      throw new Error('הקבוצה ' + colorHe(teamById(game, teamId).color) + ' כבר תפוסה על ידי ' + holder.nick);
-    }
-    if (me.teamId && me.teamId !== teamId) throw new Error('אתה כבר משויך לקבוצה אחרת');
-    me.teamId = teamId;
-    me.ready = true;
-    return { participants };
-  });
+// Host is a single field, so taking it over is a single-field write — the
+// one shape the security rules allow for hostId.
+async function takeoverHost() {
+  const ok = await mutate('לא הצלחנו להעביר את הניהול', game => (
+    game.hostId === state.clientId ? null : { hostId: state.clientId }
+  ));
+  if (ok) {
+    setWatching(false);
+    state.choosingRole = false;
+    state.hostMenu = false;
+    showNotice('אתה מנהל הדראפט בטלפון הזה');
+    render();
+  }
 }
 
-// Recovery path: the host can free a team whose captain vanished (new device,
-// cleared storage), letting them — or anyone else — claim it again.
-async function releaseTeam(teamId) {
+// "Just watching" writes nothing. A captain who switches to watching gives
+// their seat back so someone else can take it.
+async function watchOnly() {
   const game = state.gameData;
-  const team = game ? teamById(game, teamId) : null;
-  if (!team) return;
-  const holder = claimantOf(game, teamId);
-  const label = holder ? holder.nick : '';
-  if (!confirm('לשחרר את הקבוצה ' + colorHe(team.color) + (label ? ' מ' + label : '') + '?')) return;
+  if (game && myTeamId(game)) {
+    const ok = await mutate('לא הצלחנו לפנות את המקום', g => ({
+      participants: (g.participants || []).filter(p => p.id !== state.clientId).map(p => Object.assign({}, p))
+    }));
+    if (!ok) return;
+  }
+  setWatching(true);
+  state.choosingRole = false;
+  render();
+}
+
+// The host can free a seat whose captain is not coming, so the host can pick
+// for that team instead. Not destructive — the captain can simply retake it.
+async function releaseTeam(teamId) {
   await mutate('שגיאה בשחרור קבוצה', g => {
-    if (g.hostId !== state.clientId) throw new Error('רק המנהל יכול לשחרר קבוצה');
-    const participants = (g.participants || []).map(p => Object.assign({}, p));
-    const target = participants.find(p => p.teamId === teamId);
-    if (!target) throw new Error('לקבוצה הזו אין קפטן משויך');
-    target.teamId = null;
-    target.ready = false;
-    const patch = { participants };
-    // A pending pick made by the released captain is no longer valid.
-    if (g.pendingPick && g.pendingPick.teamId === teamId) patch.pendingPick = null;
-    return patch;
+    if (g.hostId !== state.clientId) throw new Error('רק המנהל יכול לפנות קבוצה');
+    const participants = (g.participants || []).filter(p => p.teamId !== teamId).map(p => Object.assign({}, p));
+    if (participants.length === (g.participants || []).length) throw new Error('לקבוצה הזו אין קפטן');
+    return { participants };
   });
 }
 
@@ -924,70 +1049,80 @@ async function startDraft(allowUnclaimed) {
   });
 }
 
-async function makePick(playerId) {
-  await mutate('שגיאה בבחירה', game => {
-    if (game.status !== 'draft') throw new Error('הדראפט אינו פעיל');
-    if (game.pendingPick) throw new Error('יש כבר בחירה שממתינה לאישור');
-    const turn = turnFor(game);
-    if (!turn) throw new Error('לא ניתן לזהות את התור הנוכחי');
-    if (!turnActorAllowed(game, turn)) throw new Error('זה לא התור שלך');
-    if (draftedPlayerIds(game).has(playerId)) throw new Error('השחקן הזה כבר נבחר');
-    if (!(game.players || []).some(p => p.id === playerId)) throw new Error('שחקן לא קיים');
-    return {
-      pendingPick: {
-        playerId,
-        playerName: playerName(game, playerId),
-        teamId: turn.teamId,
-        byId: state.clientId
-      }
-    };
-  });
+// Tapping a player only marks it on this phone; the confirm sheet writes it.
+// Nothing half-done is ever stored, so a phone that locks between the two
+// taps cannot leave the draft waiting on it.
+function selectPlayer(playerId) {
+  const game = viewOf(state.gameData);
+  if (!game || state.inflight) return;
+  const turn = getCurrentTurn(game);
+  if (!turn || !turn.isMine || draftedPlayerIds(game).has(playerId)) return;
+  state.selected = { playerId, seq: (game.picks || []).length };
+  haptic(12);
+  render();
 }
 
-async function confirmPick() {
-  const ok = await mutate('שגיאה באישור בחירה', game => {
-    if (game.status !== 'draft') throw new Error('הדראפט אינו פעיל');
-    const pending = game.pendingPick;
-    if (!pending) throw new Error('אין בחירה שממתינה לאישור');
-    const turn = turnFor(game);
-    if (!turn) throw new Error('לא ניתן לזהות את התור הנוכחי');
-    if (!turnActorAllowed(game, turn)) throw new Error('זה לא התור שלך');
-    // The pending pick must still belong to the team whose turn it is.
-    if (pending.teamId !== turn.teamId) throw new Error('הבחירה שממתינה שייכת לתור אחר');
-    if (draftedPlayerIds(game).has(pending.playerId)) throw new Error('השחקן הזה כבר נבחר');
+function clearSelection() {
+  state.selected = null;
+  render();
+}
 
-    const pick = {
-      playerId: pending.playerId,
-      playerName: playerName(game, pending.playerId),
-      teamId: pending.teamId,
-      byId: pending.byId || state.clientId,
-      seq: (game.picks || []).length
-    };
-    const picks = (game.picks || []).concat([pick]);
-    const done = picks.length >= totalPicksNeeded(game);
+// One transaction per pick, pinned to the pick number the captain was looking
+// at. If anything moved in between — another phone picked, the host undid,
+// the turn passed — the write is refused instead of landing in the wrong
+// slot. That single check is what rules out duplicate picks, double taps
+// (snake order gives the same team two picks in a row at every turn of the
+// snake) and stale screens.
+async function confirmPick() {
+  const sel = state.selected;
+  const game = state.gameData;
+  if (!sel || !game || state.inflight) return;
+  const turn = getCurrentTurn(game);
+  if (!turn || !turn.isMine || (game.picks || []).length !== sel.seq) { clearSelection(); return; }
+
+  const seq = sel.seq;
+  const playerId = sel.playerId;
+  state.selected = null;
+  state.inflight = { playerId, playerName: playerName(game, playerId), teamId: turn.teamId, byId: state.clientId, seq };
+  haptic(30);
+  showConfetti('small');
+  render();
+
+  const ok = await mutate('הבחירה לא נשמרה', g => {
+    if (g.status !== 'draft') throw new Error('הדראפט אינו פעיל');
+    const picks = g.picks || [];
+    if (picks.length !== seq) {
+      // A retried commit finds its own pick already in place: done.
+      const landed = picks[seq];
+      if (landed && landed.playerId === playerId && landed.byId === state.clientId) return null;
+      throw new Error('התור כבר עבר');
+    }
+    const t = turnFor(g);
+    if (!t) throw new Error('לא ניתן לזהות את התור הנוכחי');
+    if (!turnActorAllowed(g, t)) throw new Error('זה כבר לא התור שלך');
+    if (draftedPlayerIds(g).has(playerId)) throw new Error('השחקן הזה כבר נבחר');
+    if (!(g.players || []).some(p => p.id === playerId)) throw new Error('שחקן לא קיים');
+    const pick = { playerId, playerName: playerName(g, playerId), teamId: t.teamId, byId: state.clientId, seq };
+    const next = picks.concat([pick]);
     return {
-      picks,
+      picks: next,
       pendingPick: null,
       lastPick: pick,
-      turn: turnStateFor(game, picks.length),
-      status: done ? 'complete' : 'draft'
+      turn: turnStateFor(g, next.length),
+      status: next.length >= totalPicksNeeded(g) ? 'complete' : 'draft'
     };
   });
-  if (ok) { showConfetti('small'); haptic(30); }
-}
 
-async function cancelPendingPick() {
-  await mutate('שגיאה בביטול הבחירה', game => {
-    const pending = game.pendingPick;
-    if (!pending) throw new Error('אין בחירה לבטל');
-    const isOwner = pending.byId === state.clientId;
-    const turn = turnFor(game);
-    const controlsTurn = turn && turnActorAllowed(game, turn) && pending.teamId === turn.teamId;
-    if (!isOwner && !controlsTurn && game.hostId !== state.clientId) {
-      throw new Error('רק הקפטן שבחר או המנהל יכולים לבטל');
-    }
-    return { pendingPick: null };
-  });
+  if (!ok) {
+    if (state.inflight && state.inflight.seq === seq) state.inflight = null;
+    render();
+    return;
+  }
+  // The snapshot carrying the pick normally clears `inflight` first. If the
+  // acknowledgement beat it, give the listener a moment before letting go.
+  setTimeout(() => {
+    if (state.inflight && state.inflight.seq === seq) { state.inflight = null; render(); }
+  }, 6000);
 }
 
 // Undo is a pop: rosters, availability and the turn are all derived from
@@ -1013,6 +1148,7 @@ async function undoPick() {
 // the deliberate confirm sheet (`confirmReset`), not a permission check.
 async function resetDraft() {
   const ok = await mutate('שגיאה באיפוס', game => {
+    if (!actorHasRole(game)) throw new Error('רק המנהל או הקפטנים יכולים לאפס');
     if (!(game.teams || []).length) throw new Error('אין קבוצות לאפס');
     // Participants and their team claims are kept on purpose — wiping them
     // used to force every captain to rejoin and re-claim.
@@ -1041,19 +1177,22 @@ async function restartWithRoster() {
   const players = parsed.names.map((name, index) => ({ id: 'p' + index, name }));
   const wasHost = isHost(state.gameData);
 
-  const ok = await mutate('שגיאה באיפוס', game => ({
-    players,
-    status: 'captains',
-    teams: [],
-    // Nicknames are kept so nobody has to introduce themselves again, but every
-    // team claim must go: the new teams get the same ids (t0..t2), and a stale
-    // claim would silently hand somebody a team they never picked.
-    participants: (game.participants || []).map(p => ({ id: p.id, nick: p.nick, teamId: null, ready: true })),
-    picks: [],
-    turn: { order: [], index: 0, direction: 1 },
-    pendingPick: null,
-    lastPick: null
-  }));
+  const ok = await mutate('שגיאה באיפוס', game => {
+    if (!actorHasRole(game)) throw new Error('רק המנהל או הקפטנים יכולים לאפס');
+    return {
+      players,
+      status: 'captains',
+      teams: [],
+      // Every seat claim must go: the new teams get the same ids (t0..t2), and
+      // a stale claim would silently hand somebody a team they never picked.
+      // Everyone simply picks their role again once the new teams exist.
+      participants: [],
+      picks: [],
+      turn: { order: [], index: 0, direction: 1 },
+      pendingPick: null,
+      lastPick: null
+    };
+  });
   if (!ok) return;
 
   // Captain selection is host-only, so whoever restarts the evening has to be
@@ -1077,24 +1216,11 @@ async function restartWithRoster() {
   showNotice('המשחק אופס מההתחלה — בחר קפטנים מהרשימה החדשה');
 }
 
+// Leaves on this phone only — the game itself is untouched and the link
+// brings you straight back, so it needs no "are you sure".
 function fullReset() {
-  if (!confirm('לצאת מהמשחק הזה ולהתחיל מחדש במכשיר הזה? (המשחק עצמו לא נמחק)')) return;
   leaveGame();
   render();
-}
-
-async function recoverHost() {
-  const key = state.hostKeyInput.trim().toUpperCase();
-  if (!key) { showError('הזן את קוד המנהל'); return; }
-  const ok = await mutate('שגיאה בשחזור הרשאות', game => {
-    if (game.hostId === state.clientId) throw new Error('אתה כבר המנהל');
-    if (!game.hostKey || game.hostKey.toUpperCase() !== key) throw new Error('קוד מנהל שגוי');
-    return { hostId: state.clientId };
-  });
-  if (ok) {
-    state.hostKeyInput = '';
-    showNotice('הרשאות המנהל הועברו למכשיר הזה');
-  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -1104,12 +1230,21 @@ async function recoverHost() {
 function turnFor(game) {
   const order = (game.turn && game.turn.order) || [];
   if (!order.length) return null;
+  if ((game.picks || []).length >= totalPicksNeeded(game)) return null;
   const snake = !game.settings || game.settings.snake !== false;
   const pos = snakePosition((game.picks || []).length, order.length, snake);
   if (!pos) return null;
   const teamId = order[pos.index];
   if (!teamById(game, teamId)) return null;
   return { teamId, index: pos.index, direction: pos.direction };
+}
+
+// Reset is open to anyone holding a role — the host or any captain — so a
+// draft never waits on one particular phone. Anonymous watchers, who may be
+// the whole WhatsApp group, cannot wipe it.
+function actorHasRole(game) {
+  return game.hostId === state.clientId ||
+    (game.participants || []).some(p => p.id === state.clientId && p.teamId);
 }
 
 function turnActorAllowed(game, turn) {
@@ -1145,12 +1280,6 @@ function buildWhatsAppText(game) {
     text += '\n';
   });
   return text;
-}
-
-function shareWhatsApp() {
-  const game = state.gameData;
-  if (!game) return;
-  window.open('https://wa.me/?text=' + encodeURIComponent(buildWhatsAppText(game)), '_blank');
 }
 
 function copyText(text, onDone) {
@@ -1212,8 +1341,9 @@ function render() {
   const caret = active && typeof active.selectionStart === 'number' ? active.selectionStart : null;
   const scrollY = window.scrollY;
 
-  const game = state.gameData;
-  if (game) pruneCaptainDraft(game);
+  if (state.gameData) pruneCaptainDraft(state.gameData);
+  // Draw the optimistic view: a confirmed pick still in flight shows as made.
+  const game = viewOf(state.gameData);
 
   // Work out what changed since the last paint *before* building the markup,
   // so the animation classes can be baked straight into the HTML instead of
@@ -1225,6 +1355,7 @@ function render() {
   // screen is exactly what this screen is about to replace.
   if (state.rosterEdit && game) html = renderImport(game, anim);
   else if (state.phase === 'captains' && game) html = renderCaptains(game);
+  else if (needsRole(game)) html = renderRolePicker(game);
   else if (state.phase === 'lobby' && game) html = renderLobby(game, anim);
   else if (state.phase === 'draft' && game) html = renderDraft(game, anim);
   else if (state.phase === 'complete' && game) html = renderComplete(game, anim);
@@ -1255,7 +1386,7 @@ function diffForAnimation(game) {
   const prev = state.uiPrev;
   const turn = game && state.phase === 'draft' ? getCurrentTurn(game) : null;
   const picks = game ? (game.picks || []).length : -1;
-  const pending = game && game.pendingPick ? game.pendingPick.playerId : '';
+  const pending = state.selected ? state.selected.playerId : '';
   const next = {
     turnKey: turn ? turn.teamId + ':' + picks : '',
     picks,
@@ -1296,30 +1427,37 @@ function afterRender(anim) {
 /* Shared shell pieces                                                 */
 /* ------------------------------------------------------------------ */
 
-// Every screen answers "who am I" in the same place, at the same size.
-// The old build never showed it at all, so on a borrowed phone mid-draft
-// there was no way to tell whether you were a captain or a spectator.
+// Every screen answers "who am I" in the same place, at the same size — and
+// during the draft the chip is also how you change it: tap who you are.
 function meChip(game) {
   if (!game) return '';
-  const me = myParticipant(game);
   const host = isHost(game);
-  if (!me && !host) return '';
-  const team = me && me.teamId ? teamById(game, me.teamId) : null;
-  // A host who has not entered a nickname yet is just "the host" — showing
-  // that word twice, once as a name and once as a role, said nothing.
-  if (!me) {
-    return '<span class="me" data-me><span class="avatar">' + icon('crown', 13) + '</span>' +
-      '<span class="me__name">מנהל</span></span>';
+  const teamId = myTeamId(game);
+  const team = teamId ? teamById(game, teamId) : null;
+  let mark, name, role = '', cls = 'me';
+  if (team) {
+    mark = renderTeamShirt(team.color, 'shirt--xs');
+    name = playerName(game, team.captainId);
+    role = 'קפטן ' + colorHe(team.color) + (host ? ' · מנהל' : '');
+    cls += ' me--volt';
+  } else if (host) {
+    mark = '<span class="avatar">' + icon('crown', 13) + '</span>';
+    name = 'מנהל';
+  } else if (state.watching) {
+    mark = '<span class="avatar">' + icon('eye', 13) + '</span>';
+    name = 'צופה';
+  } else {
+    return '';
   }
-  const role = team ? 'קפטן ' + colorHe(team.color) : (host ? 'מנהל' : 'צופה');
-  return '<span class="me' + (team ? ' me--volt' : '') + '" data-me data-team="' + escapeHtml(team ? team.color : '') + '">' +
-    (team
-      ? renderTeamShirt(team.color, 'shirt--xs')
-      : '<span class="avatar">' + escapeHtml(initials(me.nick)) + '</span>') +
+  const live = state.phase === 'lobby' || state.phase === 'draft';
+  const tag = live ? 'button' : 'span';
+  return '<' + tag + ' class="' + cls + '" data-me data-team="' + escapeHtml(team ? team.color : '') + '"' +
+    (live ? ' onclick="handleChooseRole()" aria-label="' + escapeHtml('אתה: ' + name + '. לחץ להחלפת תפקיד') + '"' : '') + '>' +
+    mark +
     '<span class="stack">' +
-      '<span class="me__name">' + escapeHtml(me.nick) + '</span>' +
-      '<span class="me__role">' + escapeHtml(role) + '</span>' +
-    '</span></span>';
+      '<span class="me__name">' + escapeHtml(name) + '</span>' +
+      (role ? '<span class="me__role">' + escapeHtml(role) + '</span>' : '') +
+    '</span></' + tag + '>';
 }
 
 function appBar(game, opts) {
@@ -1333,28 +1471,124 @@ function appBar(game, opts) {
     '</div></div></header>';
 }
 
-// The game code is what gets pasted into WhatsApp, so copying the link is
-// the action and the code itself is the receipt — not the other way round.
-function codeRow(game) {
-  let html = '<div class="row row--wrap" style="gap:8px">' +
-    '<button class="btn btn--sm btn--ghost" data-copy-btn onclick="handleCopyLink()">' + icon('link', 16) + '<span>העתק קישור הזמנה</span></button>' +
-    '<span class="chip">קוד<span class="code num">' + escapeHtml(state.gameId || '') + '</span></span>';
-  if (isHost(game) && game && game.hostKey) {
-    html += '<span class="chip" title="שמור אותו — הוא מעביר הרשאות מנהל למכשיר אחר">' +
-      icon('key', 13) + '<span class="chip__label">קוד מנהל</span><span class="code num">' + escapeHtml(game.hostKey) + '</span></span>';
-  }
-  html += '</div>';
+/* -- Sharing the link ---------------------------------------------- */
+
+// The whole invitation is one link. The hash carries the game, so it works on
+// any static host with no server routing, survives a refresh, and opens the
+// right draft from a WhatsApp message.
+function inviteUrl() {
+  return window.location.origin + window.location.pathname + '#' + (state.gameId || '');
+}
+
+function inviteText() {
+  return '⚽ Draft21 — הדראפט פתוח!\nלחצו על הקישור ובחרו מי אתם:\n' + inviteUrl();
+}
+
+// A plain link rather than window.open(): in-app browsers (WhatsApp's own
+// included) block scripted pop-ups but always follow a real tap on a link.
+function waLink(text, label, cls, attrs) {
+  return '<a class="' + cls + '" href="https://wa.me/?text=' + encodeURIComponent(text) + '" target="_blank" rel="noopener"' + (attrs || '') + '>' +
+    icon('share', 18) + '<span>' + label + '</span></a>';
+}
+
+// The invite block. On the host's lobby it is the main event; elsewhere it is
+// a quiet row, because anyone may forward the link but only one person must.
+function inviteBlock(game, prominent) {
+  const actions = '<div class="row" style="gap:8px">' +
+      waLink(inviteText(), 'שלח בוואטסאפ', 'btn btn--good grow' + (prominent ? ' btn--lg' : ''), ' data-share-invite') +
+      '<button class="btn btn--ghost' + (prominent ? ' btn--lg' : '') + '" data-copy-btn onclick="handleCopyLink()" aria-label="העתק קישור">' + icon('link', 18) + '<span>העתק</span></button>' +
+    '</div>';
+  if (!prominent) return actions;
+  return '<div class="card card--volt stack-12" data-invite>' +
+    '<div class="stack-4">' +
+      '<div class="t-h2">שלח קישור אחד לקבוצה</div>' +
+      '<div class="t-meta">מי שנכנס בוחר תפקיד בלחיצה — בלי הרשמה ובלי סיסמה.</div>' +
+    '</div>' +
+    actions +
+    '<div class="t-micro t-center">קוד <span class="code num">' + escapeHtml(state.gameId || '') + '</span></div>' +
+    '</div>';
+}
+
+// Kept for the screens that only need the link, not the pitch.
+function codeRow() {
+  return inviteBlock(null, false);
+}
+
+// For anyone stuck on a screen only the host can move forward: the host's
+// phone died, or they opened the link on a second device.
+function hostTakeoverBlock(game) {
+  if (!game || isHost(game)) return '';
+  return '<div class="t-center"><button data-takeover-host onclick="handleTakeoverHost()" class="linkish">אני המנהל — להמשיך בטלפון הזה</button></div>';
+}
+
+/* -- Role picker ---------------------------------------------------- */
+
+// The front door. Opening the link lands here once; one tap on a seat and you
+// are in the live draft, and this phone remembers it across refreshes.
+function renderRolePicker(game) {
+  const switching = state.choosingRole && (hasRole(game) || state.watching);
+  let html = '<div class="scr" style="--glow:rgba(216,255,62,.18)">' +
+    appBar(game, switching ? { back: 'handleCloseRolePicker()', title: 'החלפת תפקיד' } : {}) +
+    '<div class="wrap page stack-24" data-role-picker>' +
+    '<div class="stack-8">' +
+      '<div class="row" style="gap:8px"><span class="livedot t-good"></span><span class="t-micro">' +
+        (state.phase === 'draft' ? 'הדראפט בשידור חי' : 'הדראפט נפתח') + '</span></div>' +
+      '<div class="t-display">מי אתה?</div>' +
+      '<p class="t-body t-dim t-balance">לחיצה אחת ואתה בפנים. הטלפון יזכור אותך.</p>' +
+    '</div>' +
+    '<div class="stack-8">';
+  teamsByKit(game).forEach(team => { html += roleCard(game, team); });
+  // Most people opening the link are neither captain nor host, so watching
+  // sits right under the seats instead of below the fold.
+  html += '</div>' +
+    '<button data-role-watch onclick="handleWatchOnly()" class="btn btn--ghost btn--lg btn--block">' + icon('eye', 20) + 'אני רק צופה</button>' +
+    hostRoleCard(game) +
+    '</div></div>';
   return html;
 }
 
-function hostRecoveryBlock() {
-  const game = state.gameData;
-  if (!game || isHost(game)) return '';
-  return '<details class="details"><summary>אני המנהל — שחזור הרשאות</summary>' +
-    '<div class="row" style="gap:8px;margin-block-start:8px">' +
-    '<input id="hostKeyInput" type="text" inputmode="latin" autocapitalize="characters" value="' + escapeHtml(state.hostKeyInput) + '" oninput="handleHostKeyInput(this.value)" class="field field--code grow" placeholder="קוד מנהל">' +
-    '<button onclick="handleRecoverHost()" class="btn btn--ghost">אישור</button>' +
-    '</div></details>';
+function roleCard(game, team) {
+  const holder = claimantOf(game, team.id);
+  const mine = !!holder && holder.id === state.clientId;
+  const taken = !!holder && !mine;
+  const captain = playerName(game, team.captainId);
+  const id = escapeHtml(team.id);
+  const tag = taken ? 'div' : 'button';
+  const click = taken ? '' : (mine ? ' onclick="handleCloseRolePicker()"' : ' onclick="handleClaimRole(\'' + id + '\')"');
+  return '<' + tag + ' class="slot role' + (mine ? ' slot--mine' : (taken ? ' role--taken' : ' slot--open')) + '" data-team="' + escapeHtml(team.color) + '" data-role="' + escapeHtml(team.color) + '"' + click + '>' +
+    renderTeamShirt(team.color, 'shirt--lg') +
+    '<span class="slot__body">' +
+      '<span class="role__kicker">קפטן ' + escapeHtml(colorHe(team.color)) + '</span>' +
+      '<span class="role__name">' + escapeHtml(captain) + '</span>' +
+      (taken
+        ? '<span class="slot__sub">כבר נבחר בטלפון אחר</span>' +
+          '<button class="role__takeover" data-takeover="' + escapeHtml(team.color) + '" onclick="handleTakeoverRole(\'' + id + '\')">' +
+            icon('refresh', 14) + 'זה אני — המשך כאן</button>'
+        : '') +
+    '</span>' +
+    '<span class="slot__cta">' +
+      (mine ? '<span class="chip chip--volt">' + icon('check', 12) + 'זה אתה</span>'
+        : taken ? '<span class="chip">תפוס</span>'
+        : '<span class="chip chip--volt">זה אני</span>') +
+    '</span>' +
+    '</' + tag + '>';
+}
+
+// The host seat always has a holder — whoever created the draft — so it is
+// never "free"; it is offered as "continue here" for the one person it
+// belongs to, compact, because nobody else needs it.
+function hostRoleCard(game) {
+  const mine = isHost(game);
+  return '<div class="slot slot--compact role--host' + (mine ? ' slot--mine' : '') + '" data-role="host">' +
+    '<span class="role__crown">' + icon('crown', 20) + '</span>' +
+    '<span class="slot__body">' +
+      '<span class="slot__title">מנהל הדראפט</span>' +
+      '<span class="slot__sub">' + (mine ? 'זה אתה — מתחיל ומפרסם' : 'מתחיל את הדראפט ומפרסם את הקבוצות') + '</span>' +
+    '</span>' +
+    (mine
+      ? '<span class="slot__cta"><span class="chip chip--volt">' + icon('check', 12) + 'זה אתה</span></span>'
+      : '<button class="role__takeover role__takeover--inline" data-takeover="host" onclick="handleTakeoverHost()">זה אני</button>') +
+    '</div>';
 }
 
 function emptyLine(text) {
@@ -1449,6 +1683,14 @@ function renderHome() {
 // before committing anything.
 // `game` is passed only on the restart path — the same screen, but it replaces
 // the roster of a game that already exists instead of creating a new one.
+// "6 בכל קבוצה" — what a roster of this size means for the evening. Every
+// player, captains included, ends up on a team; when the count does not split
+// evenly the snake order decides which team gets the extra player.
+function teamSizeLabel(count) {
+  const base = Math.floor(count / 3);
+  return count % 3 ? base + '–' + (base + 1) + ' בקבוצה' : base + ' בכל קבוצה';
+}
+
 function renderImport(game, anim) {
   const restart = !!game;
   const parsed = parseRoster(state.input);
@@ -1476,10 +1718,10 @@ function renderImport(game, anim) {
       : '') +
 
     '<div class="row row--between">' +
-      '<span class="tally' + (count > MAX_PLAYERS ? ' t-bad' : (ready ? ' t-volt' : '')) + '">' +
-        '<span class="tally__n num">' + count + '</span><span class="tally__d num">מתוך ' + MAX_PLAYERS + '</span>' +
+      '<span class="tally' + (count > MAX_PLAYERS ? ' t-bad' : (ready ? ' t-volt' : '')) + '" data-tally>' +
+        '<span class="tally__n num">' + count + '</span><span class="tally__d">' + (ready ? 'שחקנים · ' + teamSizeLabel(count) : 'שחקנים') + '</span>' +
       '</span>' +
-      '<span class="t-meta">מינימום <span class="num">' + MIN_PLAYERS + '</span> · שורה לכל שם</span>' +
+      '<span class="t-meta"><span class="num">' + MIN_PLAYERS + '–' + MAX_PLAYERS + '</span> · שורה לכל שם</span>' +
     '</div>' +
 
     '<textarea id="playerInput" oninput="handlePlayerInput(this.value)" class="field field--area" ' +
@@ -1547,6 +1789,7 @@ function renderCaptains(game) {
   const picked = state.captains.length;
   const assignedCount = state.captains.filter(id => TEAM_COLORS.indexOf(state.teamAssignments[id]) > -1).length;
   const ready = picked === 3 && assignedCount === 3;
+  const kitOf = id => state.teamAssignments[id] || '';
 
   let html = '<div class="scr" style="--glow:rgba(255,197,61,.20);--dock-h:96px">' +
     appBar(game, { title: 'קפטנים' }) +
@@ -1554,9 +1797,9 @@ function renderCaptains(game) {
 
     '<div class="stack-12">' +
       '<div class="row row--between">' +
-        '<span class="t-h1">👑 בחר שלושה קפטנים</span>' +
+        '<span class="t-h1">👑 מי הקפטנים?</span>' +
       '</div>' +
-      codeRow(game) +
+      '<p class="t-body t-dim">לחץ על שלושה שמות. הראשון אדום, השני לבן, השלישי שחור.</p>' +
     '</div>' +
 
     '<div class="stack-12">' +
@@ -1564,14 +1807,14 @@ function renderCaptains(game) {
       '<div class="namegrid">';
   game.players.forEach(player => {
     const selected = state.captains.includes(player.id);
-    html += '<button data-player-id="' + escapeHtml(player.id) + '" aria-pressed="' + (selected ? 'true' : 'false') + '" onclick="handleToggleCaptain(\'' + escapeHtml(player.id) + '\')" class="namebtn' + (selected ? ' namebtn--on' : '') + '">' +
-      (selected ? icon('crown', 15) : '') + '<span>' + escapeHtml(player.name) + '</span></button>';
+    html += '<button data-player-id="' + escapeHtml(player.id) + '" aria-pressed="' + (selected ? 'true' : 'false') + '" onclick="handleToggleCaptain(\'' + escapeHtml(player.id) + '\')" class="namebtn' + (selected ? ' namebtn--on' : '') + '"' + (selected ? ' data-team="' + escapeHtml(kitOf(player.id)) + '"' : '') + '>' +
+      (selected ? renderTeamShirt(kitOf(player.id), 'shirt--xs') : '') + '<span>' + escapeHtml(player.name) + '</span></button>';
   });
   html += '</div></div>';
 
   if (picked === 3) {
     html += '<div class="stack-12 anim-rise">' +
-      '<div class="sect-title"><span class="t-micro">צבע לכל קפטן</span>' +
+      '<div class="sect-title"><span class="t-micro">הצבעים — לחץ על חולצה כדי להחליף</span>' +
         '<button onclick="handleRandomizeColors()" class="btn btn--xs btn--ghost">' + icon('shuffle', 13) + 'ערבב</button>' +
       '</div>';
     state.captains.forEach(captainId => {
@@ -1589,17 +1832,14 @@ function renderCaptains(game) {
       html += '</div></div>';
     });
     html += '</div>';
-  } else {
-    html += '<div class="problem problem--warn">' + icon('bolt', 18) +
-      '<span>אחרי שלושה קפטנים ייפתחו כאן צבעי הקבוצות.</span></div>';
   }
 
   html += '</div>' +
     '<div class="dock"><div class="dock__in">' +
       '<button data-finalize onclick="handleFinalizeCaptains()" ' + (ready ? '' : 'disabled') + ' class="btn btn--volt btn--lg btn--block">' +
         (picked < 3
-          ? 'בחר עוד ' + (3 - picked) + ' קפטנים'
-          : (assignedCount < 3 ? 'תן צבע לכל קפטן' : '<span>פתח את אולם ההמתנה</span>' + icon('back', 20))) +
+          ? 'בחר עוד ' + (3 - picked) + (3 - picked === 1 ? ' קפטן' : ' קפטנים')
+          : (assignedCount < 3 ? 'תן צבע לכל קפטן' : '<span>פתח את הדראפט ושלח קישור</span>' + icon('back', 20))) +
       '</button>' +
     '</div></div>' +
     '</div>';
@@ -1612,16 +1852,15 @@ function renderWaitingForHost(game) {
     '<div class="wrap page stack-16">' +
       '<div class="card stack-12 t-center">' +
         '<div class="row center" style="gap:8px"><span class="livedot t-volt"></span><span class="t-micro">מחובר</span></div>' +
-        '<div class="t-h1">ממתין למנהל</div>' +
-        '<p class="t-body t-dim t-balance" data-waiting-host>המנהל בוחר עכשיו את שלושת הקפטנים ואת צבעי הקבוצות. המסך הזה יתעדכן לבד.</p>' +
+        '<div class="t-h1">עוד רגע מתחילים</div>' +
+        '<p class="t-body t-dim t-balance" data-waiting-host>המנהל בוחר עכשיו את שלושת הקפטנים. המסך יתעדכן לבד — אין צורך לרענן.</p>' +
         '<div class="stack-8">' +
           '<div class="skeleton" style="height:54px"></div>' +
           '<div class="skeleton" style="height:54px"></div>' +
           '<div class="skeleton" style="height:54px"></div>' +
         '</div>' +
       '</div>' +
-      '<div class="card">' + codeRow(game) + '</div>' +
-      hostRecoveryBlock() +
+      hostTakeoverBlock(game) +
     '</div></div>';
 }
 
@@ -1629,85 +1868,66 @@ function renderWaitingForHost(game) {
 /* Lobby                                                               */
 /* ------------------------------------------------------------------ */
 
-// The old lobby showed the three teams, and then showed them a second time
-// as a separate "pick your team" grid. Here the team slot *is* the claim
-// control: one list, one tap, and the state of every team is visible in it.
+// A team seat as a status line, and — for someone without a seat — the
+// one-tap way to take it.
 function teamSlot(game, team, opts) {
   const o = opts || {};
   const compact = !!o.compact;
   const claimant = claimantOf(game, team.id);
-  const mine = claimant && claimant.id === state.clientId;
-  const iAmUnassigned = o.canClaim;
-  const cls = 'slot' + (compact ? ' slot--compact' : '') + (mine ? ' slot--mine' : (!claimant && iAmUnassigned ? ' slot--open' : ''));
-  const tag = (!claimant && iAmUnassigned) ? 'button' : 'div';
-  const attrs = (!claimant && iAmUnassigned)
-    ? ' onclick="handleClaimTeam(\'' + escapeHtml(team.id) + '\')"'
-    : '';
+  const mine = !!claimant && claimant.id === state.clientId;
+  const open = !claimant && !!o.canClaim;
+  const captain = playerName(game, team.captainId);
+  const cls = 'slot' + (compact ? ' slot--compact' : '') + (mine ? ' slot--mine' : (open ? ' slot--open' : ''));
+  const tag = open ? 'button' : 'div';
+  const attrs = open ? ' onclick="handleClaimRole(\'' + escapeHtml(team.id) + '\')"' : '';
 
   let sub;
   if (mine) sub = '<span class="t-volt">זו הקבוצה שלך</span>';
-  else if (claimant) sub = 'מחובר: ' + escapeHtml(claimant.nick);
-  else sub = iAmUnassigned ? 'פנוי — לחץ אם אתה הקפטן' : 'ממתין לקפטן';
+  else if (claimant) sub = 'הקפטן בפנים';
+  else sub = open ? 'פנוי — לחץ אם אתה ' + escapeHtml(captain) : 'עוד לא נכנס';
 
-  return '<' + tag + ' class="' + cls + '" data-team="' + escapeHtml(team.color) + '" data-claim-btn="' + escapeHtml(team.color) + '"' + attrs + '>' +
+  return '<' + tag + ' class="' + cls + '" data-team="' + escapeHtml(team.color) + '" data-seat="' + escapeHtml(team.color) + '" data-seat-state="' + (claimant ? 'taken' : 'free') + '"' + attrs + '>' +
     renderTeamShirt(team.color, compact ? 'shirt--sm' : 'shirt--lg') +
     '<span class="slot__body">' +
       '<span class="slot__title team-name">' + escapeHtml(colorHe(team.color)) + '</span>' +
-      '<span class="slot__sub"><span class="captain-line">' + icon('crown', 13) + escapeHtml(playerName(game, team.captainId)) + '</span></span>' +
+      '<span class="slot__sub"><span class="captain-line">' + icon('crown', 13) + escapeHtml(captain) + '</span></span>' +
       '<span class="slot__sub">' + sub + '</span>' +
     '</span>' +
     '<span class="slot__cta">' +
       (mine ? '<span class="chip chip--volt">' + icon('check', 12) + 'אתה</span>'
-        : claimant ? '<span class="chip chip--good">' + icon('check', 12) + 'מחובר</span>'
-        : iAmUnassigned ? '<span class="chip chip--volt">בחר</span>'
-        : '<span class="chip chip--warn">פנוי</span>') +
+        : claimant ? '<span class="chip chip--good">' + icon('check', 12) + 'בפנים</span>'
+        : open ? '<span class="chip chip--volt">זה אני</span>'
+        : '<span class="chip chip--warn">ממתין</span>') +
     '</span>' +
-    (o.showRelease && claimant ? '<button class="btn btn--xs btn--danger" onclick="event.stopPropagation();handleReleaseTeam(\'' + escapeHtml(team.id) + '\')">שחרר</button>' : '') +
     '</' + tag + '>';
 }
 
 function renderLobby(game, anim) {
-  const me = myParticipant(game);
-  const teams = game.teams || [];
-  const claimedCount = teams.filter(t => claimantOf(game, t.id)).length;
+  const teams = teamsByKit(game);
+  const claimed = teams.filter(t => claimantOf(game, t.id));
+  const missing = teams.filter(t => !claimantOf(game, t.id));
   const host = isHost(game);
-  const canClaim = !!me && !me.teamId;
+  const myTeam = myTeamId(game) ? teamById(game, myTeamId(game)) : null;
 
-  // Joining is the only thing that matters until you have a name.
-  if (!me) return renderJoinCard(game, 'מי אתה?', 'הקפטנים בוחרים קבוצה, כל השאר צופים. אפשר לשנות אחר כך.');
-
-  let html = '<div class="scr" style="--glow:rgba(90,150,255,.20);--dock-h:' + (host ? (claimedCount === 3 ? '108px' : '146px') : '76px') + '">' +
-    appBar(game, { title: 'אולם המתנה' }) +
+  let html = '<div class="scr" style="--glow:rgba(90,150,255,.20);--dock-h:' + (host ? (missing.length ? '124px' : '96px') : '76px') + '">' +
+    appBar(game, { title: 'לפני הפתיחה' }) +
     '<div class="wrap page stack-24">' +
 
-    '<div class="stack-12">' +
+    '<div class="stack-8">' +
       '<div class="row" style="gap:8px"><span class="livedot t-good"></span><span class="t-micro">בשידור חי</span></div>' +
-      '<div class="t-h1"><span class="num">' + claimedCount + '</span> מתוך <span class="num">3</span> קפטנים מחוברים</div>' +
-      codeRow(game) +
+      '<div class="t-h1" data-lobby-count><span class="num">' + claimed.length + '</span> מתוך <span class="num">3</span> קפטנים בפנים</div>' +
+      (myTeam
+        ? '<p class="t-body t-dim">אתה הקפטן של ' + escapeHtml(colorHe(myTeam.color)) + '. כשהמנהל יתחיל, התור שלך יידלק כאן.</p>'
+        : (host ? '' : '<p class="t-body t-dim">אתה צופה. הדראפט יופיע כאן ברגע שיתחיל.</p>')) +
     '</div>' +
+
+    (host ? inviteBlock(game, true) : '') +
 
     '<div class="stack-8">' +
       '<div class="sect-title"><span class="t-micro">הקבוצות</span></div>';
-  teams.forEach(team => { html += teamSlot(game, team, { canClaim, showRelease: host }); });
+  // Someone without a seat can still take a free one from here.
+  teams.forEach(team => { html += teamSlot(game, team, { canClaim: !myTeam && !host }); });
   html += '</div>';
-
-  if (canClaim && claimedCount === 3) {
-    html += '<div class="problem problem--warn" data-no-open-teams>' + icon('eye', 18) +
-      '<span>כל הקבוצות תפוסות — אתה עוקב אחרי הדראפט כצופה.</span></div>';
-  }
-
-  html += '<div class="stack-8">' +
-    '<div class="sect-title"><span class="t-micro">מי כאן</span><span class="t-micro num">' + (game.participants || []).length + '</span></div>' +
-    '<div class="people">';
-  (game.participants || []).forEach(p => {
-    const team = p.teamId ? teamById(game, p.teamId) : null;
-    html += '<span class="person' + (p.id === state.clientId ? ' person--me' : '') + '" data-participant="' + escapeHtml(p.nick) + '" data-team="' + escapeHtml(team ? team.color : '') + '">' +
-      (team ? renderTeamShirt(team.color, 'shirt--xs') : '<span class="avatar">' + escapeHtml(initials(p.nick)) + '</span>') +
-      '<span>' + escapeHtml(p.nick) + '</span>' +
-      (p.id === game.hostId ? '<span class="t-micro" style="letter-spacing:.04em">מנהל</span>' : '') +
-      '</span>';
-  });
-  html += '</div></div>';
 
   if (host) {
     html += '<div class="stack-12">' +
@@ -1736,53 +1956,32 @@ function renderLobby(game, anim) {
     }
     html += '</div>';
   } else {
-    html += '<div class="card row" data-waiting-start><span class="livedot t-volt"></span>' +
-      '<span class="t-meta grow">ממתין שהמנהל יתחיל את הדראפט…</span></div>' +
-      hostRecoveryBlock();
+    html += '<div class="stack-8"><div class="sect-title"><span class="t-micro">שתף את הקישור</span></div>' + codeRow() + '</div>';
   }
 
-  // Everyone gets the menu, because everyone can reset from it.
   html += '<div class="t-center"><button onclick="handleOpenHostMenu()" class="linkish">' + escapeHtml(toolsMenuLabel(game)) + '</button></div>';
-
   html += '</div>';
 
   if (host) {
-    const allClaimed = claimedCount === 3;
+    const names = missing.map(t => colorHe(t.color)).join(', ');
     html += '<div class="dock"><div class="dock__in stack-8">' +
-      '<button data-start-draft onclick="handleStartDraft()" ' + (allClaimed ? '' : 'disabled') + ' class="btn btn--volt btn--lg btn--block">' +
-        icon('bolt', 20) + 'התחל דראפט</button>' +
-      (!allClaimed
-        ? '<button data-start-anyway onclick="handleStartDraftAnyway()" class="linkish" style="display:block;width:100%">חסרים ' + (3 - claimedCount) + ' קפטנים — התחל בלעדיהם ואני אנהל אותן</button>'
+      '<button data-start-draft onclick="handleStartDraft()" ' + (missing.length ? 'disabled' : '') + ' class="btn btn--volt btn--lg btn--block">' +
+        (missing.length
+          ? 'ממתין ל' + (missing.length === 1 ? 'קפטן אחד' : '־' + missing.length + ' קפטנים')
+          : icon('bolt', 20) + 'התחל דראפט') +
+      '</button>' +
+      (missing.length
+        ? '<button data-start-anyway onclick="handleStartDraftAnyway()" class="linkish" style="display:block;width:100%">להתחיל עכשיו — אני אבחר בשביל ' + escapeHtml(names) + '</button>'
         : '') +
       '</div></div>';
   } else {
     html += '<div class="dock"><div class="dock__in">' +
-      '<div class="row center" style="gap:8px"><span class="livedot t-good"></span><span class="t-meta">מחכים למנהל</span></div>' +
+      '<div class="row center" style="gap:8px" data-waiting-start><span class="livedot t-good"></span><span class="t-meta">מחכים שהמנהל יתחיל</span></div>' +
       '</div></div>';
   }
 
   html += toolsSheets(game, anim) + '</div>';
   return html;
-}
-
-function renderJoinCard(game, title, sub) {
-  return '<div class="scr" style="--glow:rgba(90,150,255,.20);--dock-h:88px">' +
-    appBar(game) +
-    '<div class="wrap page stack-16">' +
-      '<div class="stack-12" data-join-form>' +
-        '<div class="t-display">' + escapeHtml(title) + '</div>' +
-        '<p class="t-body t-dim t-balance">' + escapeHtml(sub) + '</p>' +
-      '</div>' +
-      '<div>' +
-        '<label class="field-label" for="nicknameInput">הכינוי שלך</label>' +
-        '<input id="nicknameInput" type="text" autocomplete="nickname" value="' + escapeHtml(state.nickname) + '" oninput="handleNicknameInput(this.value)" class="field" placeholder="איך קוראים לך?">' +
-      '</div>' +
-      '<div class="card">' + codeRow(game) + '</div>' +
-    '</div>' +
-    '<div class="dock"><div class="dock__in">' +
-      '<button onclick="handleJoinGame()" class="btn btn--volt btn--lg btn--block">כניסה</button>' +
-    '</div></div>' +
-    '</div>';
 }
 
 /* ------------------------------------------------------------------ */
@@ -1799,8 +1998,8 @@ function draftHud(game, turn, anim) {
   const animCls = (anim.becameMine ? ' anim-flash' : '') + (anim.turnChanged ? ' anim-turn' : '');
 
   if (!turn) {
-    return '<div class="hud' + animCls + '"><div class="hud__top"><div class="hud__who">' +
-      '<div class="hud__eyebrow">הדראפט</div><div class="hud__name">מסתנכרן…</div></div></div></div>';
+    return '<div class="hud' + animCls + '" data-turn-banner data-turn-color=""><div class="hud__top"><div class="hud__who">' +
+      '<div class="hud__eyebrow">הדראפט</div><div class="hud__name">' + (made >= total ? 'סוגר את הקבוצות…' : 'מסתנכרן…') + '</div></div></div></div>';
   }
 
   const eyebrow = mine
@@ -1813,13 +2012,12 @@ function draftHud(game, turn, anim) {
       '<div class="hud__who">' +
         '<div class="hud__eyebrow">' + eyebrow + '</div>' +
         '<div class="hud__name">' + escapeHtml(mine ? 'בחר שחקן' : turn.captainName) + '</div>' +
-        '<div class="hud__sub"><span class="team-dot"></span> <span data-turn-team class="team-name">' + escapeHtml(colorHe(turn.team.color)) + '</span>' +
-          (mine ? '' : ' · ' + escapeHtml(turn.claimant ? turn.claimant.nick : 'ללא קפטן מחובר')) + '</div>' +
+        '<div class="hud__sub"><span class="team-dot"></span> <span data-turn-team class="team-name">' + escapeHtml(colorHe(turn.team.color)) + '</span></div>' +
       '</div>' +
     '</div>' +
     (turn.unclaimed
       ? '<div class="chip chip--warn" style="margin-block-start:10px" data-unclaimed-turn>' + icon('bolt', 12) +
-        (isHost(game) ? 'אין קפטן מחובר — אתה מנהל את הקבוצה הזו' : 'אין קפטן מחובר לקבוצה הזו') + '</div>'
+        (isHost(game) ? 'הקפטן לא בפנים — אתה בוחר בשבילם' : 'הקפטן לא בפנים — המנהל בוחר') + '</div>'
       : '') +
     '<div class="hud__meter">' +
       '<div class="hud__bar"><i style="width:' + pct + '%"></i></div>' +
@@ -1876,10 +2074,10 @@ function pickFeed(game, anim, limit) {
     '<span class="t-micro num">' + all.length + '</span></div><div class="feed">';
   picks.forEach((pick, i) => {
     const team = teamById(game, pick.teamId);
-    html += '<div class="feed__row' + (i === 0 && anim.pickLanded ? ' anim-land' : '') + '" data-team="' + escapeHtml(team ? team.color : '') + '" data-feed-pick="' + escapeHtml(pick.playerId) + '">' +
+    html += '<div class="feed__row' + (i === 0 && anim.pickLanded ? ' anim-land' : '') + (pick.saving ? ' is-saving' : '') + '" data-team="' + escapeHtml(team ? team.color : '') + '" data-feed-pick="' + escapeHtml(pick.playerId) + '"' + (pick.saving ? ' data-saving' : '') + '>' +
       '<span class="feed__pickno num">#' + (pick.seq + 1) + '</span>' +
       '<span class="feed__name">' + escapeHtml(pick.playerName || playerName(game, pick.playerId)) + '</span>' +
-      '<span class="feed__team">' + escapeHtml(team ? colorHe(team.color) : '') + '</span>' +
+      '<span class="feed__team">' + (pick.saving ? 'שומר…' : escapeHtml(team ? colorHe(team.color) : '')) + '</span>' +
       '</div>';
   });
   html += '</div></div>';
@@ -1912,16 +2110,18 @@ function teamPanel(game, team, opts) {
           (o.isTurn ? '<span class="chip chip--good"><span class="livedot"></span>בוחר</span>' : '') +
         '</div>' +
         '<div class="t-meta" data-claim-status="' + escapeHtml(team.color) + '">' +
-          (claimant ? escapeHtml(claimant.nick) : '<span class="t-faint">אין קפטן מחובר</span>') + '</div>' +
+          '<span class="captain-line">' + icon('crown', 12) + escapeHtml(playerName(game, team.captainId)) + '</span>' +
+          (claimant || state.phase === 'complete' ? '' : ' <span class="t-faint">· המנהל בוחר</span>') + '</div>' +
       '</div>' +
-      '<span class="teamcard__count num">' + roster.length + '</span>' +
+      '<span class="teamcard__count num" data-team-count>' + roster.length + '</span>' +
     '</div>';
 
   if (o.showRoster !== false) {
     html += '<div class="roster">';
+    const saving = state.inflight ? state.inflight.playerId : '';
     roster.forEach((id, i) => {
       const isCap = id === team.captainId;
-      html += '<div class="roster__item' + (isCap ? ' roster__item--captain' : '') + '" data-roster-player="' + escapeHtml(id) + '">' +
+      html += '<div class="roster__item' + (isCap ? ' roster__item--captain' : '') + (id === saving ? ' is-saving' : '') + '" data-roster-player="' + escapeHtml(id) + '">' +
         (isCap ? '<span style="color:#FFDC7A;display:flex">' + icon('crown', 14) + '</span>' : '<span class="roster__n num">' + i + '</span>') +
         '<span class="grow">' + escapeHtml(playerName(game, id)) + '</span>' +
         '</div>';
@@ -1935,13 +2135,9 @@ function teamPanel(game, team, opts) {
 
 function renderDraft(game, anim) {
   const turn = getCurrentTurn(game);
-  const me = myParticipant(game);
-  const host = isHost(game);
-
-  if (!me) return renderJoinCard(game, 'הצטרף לדראפט', 'קפטן שחזר, או צופה שרוצה לעקוב — שניהם מתחילים בכינוי.');
-
-  const canPick = !!(turn && turn.isMine && !game.pendingPick);
-  const hasPending = !!game.pendingPick;
+  const myTeam = myTeamId(game);
+  const canPick = !!(turn && turn.isMine && !state.inflight);
+  const sel = state.selected ? state.selected.playerId : '';
 
   let html = '<div class="scr" style="--glow:' + (turn && turn.isMine ? 'rgba(216,255,62,.24)' : 'rgba(30,180,120,.16)') + ';--dock-h:0px">' +
     appBar(game, { trailing: '<button class="btn btn--quiet btn--icon" onclick="handleOpenHostMenu()" aria-label="' + escapeHtml(toolsMenuLabel(game)) + '">' + icon('dots', 20) + '</button>' + meChip(game) }) +
@@ -1949,37 +2145,39 @@ function renderDraft(game, anim) {
     draftHud(game, turn, anim) +
     pulseBar(game, turn);
 
-  // A captain who has not claimed a team yet still needs the claim list.
-  if (!me.teamId) {
-    const teams = game.teams || [];
-    const open = teams.filter(t => !claimantOf(game, t.id));
+  // A watcher who turns out to be a captain after all can take a free seat
+  // without leaving the draft.
+  if (!myTeam && !isHost(game)) {
+    const open = teamsByKit(game).filter(t => !claimantOf(game, t.id));
     if (open.length) {
-      html += '<div class="stack-8"><div class="sect-title"><span class="t-micro">קבוצה פנויה — אם אתה הקפטן</span></div>';
+      html += '<div class="stack-8"><div class="sect-title"><span class="t-micro">קבוצה בלי קפטן — אם זה אתה</span></div>';
       open.forEach(t => { html += teamSlot(game, t, { canClaim: true, compact: true }); });
       html += '</div>';
     }
   }
 
+  const pool = availablePlayers(game);
   let poolHtml = '<div class="stack-8">' +
     '<div class="sect-title"><span class="t-micro">' + (canPick ? 'בחר את השחקן שלך' : 'עדיין על המדף') + '</span>' +
-    '<span class="t-micro num">' + availablePlayers(game).length + '</span></div>' +
+    '<span class="t-micro num" data-pool-count>' + pool.length + '</span></div>' +
     '<div class="pool">';
-  availablePlayers(game).forEach(player => {
+  pool.forEach(player => {
+    const on = player.id === sel;
     poolHtml += '<button data-pick-player="' + escapeHtml(player.id) + '" data-pick-name="' + escapeHtml(player.name) + '" ' +
-      'onclick="handleMakePick(\'' + escapeHtml(player.id) + '\')" ' + (canPick ? '' : 'disabled') +
-      ' class="pick' + (canPick ? ' pick--live' : '') + '">' + escapeHtml(player.name) + '</button>';
+      'onclick="handleSelectPlayer(\'' + escapeHtml(player.id) + '\')" ' + (canPick ? '' : 'disabled') +
+      ' aria-pressed="' + (on ? 'true' : 'false') + '"' +
+      ' class="pick' + (canPick ? ' pick--live' : '') + (on ? ' pick--sel' : '') + '">' + escapeHtml(player.name) + '</button>';
   });
   poolHtml += '</div>';
-  if (!availablePlayers(game).length) poolHtml += '<div class="pool-empty">כל השחקנים חולקו</div>';
+  if (!pool.length) poolHtml += '<div class="pool-empty">כל השחקנים חולקו</div>';
   poolHtml += '</div>';
 
   // A captain always gets the pool first — that is the thing they act on, and
-  // the layout must not reshuffle every time their turn ends. A spectator has
-  // nothing to tap, so they get the board first instead.
-  const spectating = !me.teamId;
-  html += spectating
-    ? pickFeed(game, anim, 0) + poolHtml
-    : poolHtml + pickFeed(game, anim);
+  // the layout must not reshuffle every time their turn ends. Everyone else
+  // has nothing to tap, so they get the board first instead.
+  html += myTeam || isHost(game)
+    ? poolHtml + pickFeed(game, anim)
+    : pickFeed(game, anim, 0) + poolHtml;
 
   html += '<div class="stack-12">' +
     '<div class="sect-title"><span class="t-micro">הקבוצות</span></div>';
@@ -1988,48 +2186,32 @@ function renderDraft(game, anim) {
   });
   html += '</div>';
 
-  if (!host) html += hostRecoveryBlock();
-
   html += '</div>';
-  if (hasPending) html += pendingSheet(game, turn, host, anim);
+  if (sel && canPick) html += selectionSheet(game, turn, anim);
   html += toolsSheets(game, anim) + '</div>';
   return html;
 }
 
-// The confirm step used to be a card that scrolled with the page: pick the
-// 19th name and the button was several hundred pixels above you. It is now a
-// sheet pinned to the thumb, so drafting is two taps and no scrolling — and
-// spectators get the same reveal, which is what makes watching fun.
-function pendingSheet(game, turn, host, anim) {
-  const pending = game.pendingPick;
-  const canConfirm = turn && turn.isMine && pending.teamId === turn.teamId;
-  const team = teamById(game, pending.teamId);
-  const name = pending.playerName || playerName(game, pending.playerId);
-
+// The confirm step: a sheet pinned to the thumb, so drafting is two taps and
+// no scrolling. It exists only on the picking phone — nothing is written
+// until "אישור", so a captain who walks away mid-choice stalls nobody.
+function selectionSheet(game, turn, anim) {
+  const playerId = state.selected.playerId;
+  const team = turn.team;
   const enter = anim && anim.pendingOpened ? ' sheet--in' : '';
-  let html = (canConfirm ? '<div class="sheet__scrim' + (enter ? ' sheet__scrim--in' : '') + '"></div>' : '') +
-    '<div class="sheet' + enter + '" data-pending role="dialog" aria-modal="false"><div class="sheet__in stack-16">' +
+  return '<div class="sheet__scrim' + (enter ? ' sheet__scrim--in' : '') + '" onclick="handleClearSelection()"></div>' +
+    '<div class="sheet' + enter + '" data-pending role="dialog" aria-modal="true"><div class="sheet__in stack-16">' +
     '<div class="sheet__grip"></div>' +
-    '<div class="stack-8 t-center" data-team="' + escapeHtml(team ? team.color : '') + '">' +
-      '<div class="row center" style="gap:7px"><span class="team-dot"></span>' +
-        '<span class="t-micro">' + escapeHtml(canConfirm ? 'אתה בוחר' : (team ? colorHe(team.color) + ' בוחר' : 'בחירה')) + '</span></div>' +
-      '<div class="sheet__name" data-pending-name>' + escapeHtml(name) + '</div>' +
-    '</div>';
-
-  if (canConfirm) {
-    html += '<div class="row" style="gap:10px">' +
-      '<button data-confirm-pick onclick="handleConfirmPick()" class="btn btn--volt btn--lg grow">' + icon('check', 20) + 'אישור</button>' +
-      '<button data-cancel-pending onclick="handleCancelPending()" class="btn btn--ghost" style="flex:0 0 34%">' + icon('x', 18) + 'החלף</button>' +
-      '</div>';
-  } else {
-    html += '<div class="row center" style="gap:8px"><span class="livedot t-volt"></span>' +
-      '<span class="t-meta">ממתין לאישור הקפטן…</span></div>';
-    if (host) {
-      html += '<button data-cancel-pending onclick="handleCancelPending()" class="btn btn--danger btn--block">ביטול הבחירה (מנהל)</button>';
-    }
-  }
-  html += '</div></div>';
-  return html;
+    '<div class="stack-8 t-center" data-team="' + escapeHtml(team.color) + '">' +
+      renderTeamShirt(team.color, 'shirt--md', true) +
+      '<div class="t-micro">' + escapeHtml(turn.controlledByHost ? 'אתה בוחר בשביל ' + colorHe(team.color) : 'לקבוצה ' + colorHe(team.color)) + '</div>' +
+      '<div class="sheet__name" data-pending-name>' + escapeHtml(playerName(game, playerId)) + '</div>' +
+    '</div>' +
+    '<div class="row" style="gap:10px">' +
+      '<button data-confirm-pick onclick="handleConfirmPick()" class="btn btn--volt btn--lg grow">' + icon('check', 20) + 'בחר אותו</button>' +
+      '<button data-cancel-pending onclick="handleClearSelection()" class="btn btn--ghost btn--lg" style="flex:0 0 34%">החלף</button>' +
+    '</div>' +
+    '</div></div>';
 }
 
 /* ------------------------------------------------------------------ */
@@ -2056,8 +2238,10 @@ function toolsSheets(game, anim) {
 function toolsSheet(game, anim) {
   if (!state.hostMenu) return '';
   const host = isHost(game);
+  const canReset = hasRole(game);
+  const live = state.phase === 'lobby' || state.phase === 'draft';
   const made = (game.picks || []).length;
-  const claimed = host ? (game.teams || []).filter(t => claimantOf(game, t.id)) : [];
+  const claimed = host && live ? teamsByKit(game).filter(t => claimantOf(game, t.id)) : [];
 
   const enter = anim && anim.hostMenuOpened ? ' sheet--in' : '';
   let html = '<div class="sheet__scrim' + (enter ? ' sheet__scrim--in' : '') + '" onclick="handleCloseHostMenu()"></div>' +
@@ -2066,23 +2250,32 @@ function toolsSheet(game, anim) {
     '<div class="row row--between"><span class="t-h2">' + escapeHtml(toolsMenuLabel(game)) + '</span>' +
       '<button class="btn btn--quiet btn--icon" onclick="handleCloseHostMenu()" aria-label="סגירה">' + icon('x', 18) + '</button></div>';
 
+  if (live) {
+    html += '<button data-change-role onclick="handleChooseRole()" class="btn btn--ghost btn--block">' + icon('refresh', 18) +
+      (hasRole(game) ? 'החלף תפקיד' : 'בחר תפקיד') + '</button>';
+  } else if (!host) {
+    html += '<button data-takeover-host onclick="handleTakeoverHost()" class="btn btn--ghost btn--block">' + icon('crown', 18) + 'אני המנהל — להמשיך בטלפון הזה</button>';
+  }
   if (host && state.phase === 'draft' && made > 0) {
     html += '<button data-undo onclick="handleUndoPick()" class="btn btn--ghost btn--block">' + icon('undo', 18) + 'בטל את הבחירה האחרונה</button>';
   }
+  // A captain who is not coming: free the seat and the host picks for them.
+  // Not destructive — they can take it straight back from the role picker.
   claimed.forEach(t => {
-    const holder = claimantOf(game, t.id);
-    html += '<button class="btn btn--ghost btn--block" onclick="handleReleaseTeam(\'' + escapeHtml(t.id) + '\')" data-team="' + escapeHtml(t.color) + '">' +
-      '<span class="team-dot"></span>שחרר את ' + escapeHtml(colorHe(t.color)) + ' מ' + escapeHtml(holder.nick) + '</button>';
+    html += '<button class="btn btn--ghost btn--block" data-release="' + escapeHtml(t.color) + '" onclick="handleReleaseTeam(\'' + escapeHtml(t.id) + '\')" data-team="' + escapeHtml(t.color) + '">' +
+      '<span class="team-dot"></span>פנה את ' + escapeHtml(colorHe(t.color)) + ' — אני אבחר בשבילם</button>';
   });
   // Two depths of reset, in the order people need them: keep the captains and
   // redo the picks, or throw the whole evening away and start from the list of
-  // who actually turned up.
-  html += '<button data-reset onclick="handleAskResetDraft()" class="btn btn--danger btn--block">' + icon('refresh', 18) +
-    resetActionLabel() + '</button>' +
-    '<button data-restart-roster onclick="handleOpenRosterRestart()" class="btn btn--danger btn--block">' + icon('list', 18) +
-    'התחל מאפס — רשימה חדשה</button>' +
-    '<div class="t-micro t-dim t-center">כל אחד במשחק יכול לאפס — יש אישור לפני.</div>' +
-    '<button onclick="handleFullReset()" class="linkish">יציאה מהמשחק במכשיר הזה</button>' +
+  // who actually turned up. Any role may reset; watchers may not.
+  if (canReset) {
+    html += '<button data-reset onclick="handleAskResetDraft()" class="btn btn--danger btn--block">' + icon('refresh', 18) +
+      resetActionLabel() + '</button>' +
+      '<button data-restart-roster onclick="handleOpenRosterRestart()" class="btn btn--danger btn--block">' + icon('list', 18) +
+      'התחל מאפס — רשימה חדשה</button>' +
+      '<div class="t-micro t-dim t-center">המנהל וכל קפטן יכולים לאפס — יש אישור לפני.</div>';
+  }
+  html += '<button onclick="handleFullReset()" class="linkish">יציאה מהמשחק במכשיר הזה</button>' +
     '</div></div>';
   return html;
 }
@@ -2139,7 +2332,7 @@ function renderComplete(game, anim) {
   const host = isHost(game);
   // The results are the one screen people crowd around. On anything wider than
   // a phone the three teams sit side by side instead of stacking.
-  let html = '<div class="scr" style="--glow:rgba(255,176,32,.24);--dock-h:172px">' +
+  let html = '<div class="scr" style="--glow:rgba(255,176,32,.24);--dock-h:150px">' +
     appBar(game, { title: 'התוצאות', wide: true }) +
     '<div class="wrap wrap--wide page stack-24">' +
 
@@ -2150,19 +2343,19 @@ function renderComplete(game, anim) {
     '</div>' +
 
     '<div class="final-grid">';
-  (game.teams || []).forEach((team, i) => {
+  teamsByKit(game).forEach((team, i) => {
     html += '<div class="anim-rise anim-rise-' + Math.min(3, i + 1) + '" data-final-team="' + escapeHtml(team.color) + '">' +
       teamPanel(game, team, { showRoster: true }) + '</div>';
   });
   html += '</div>';
 
-  html += '<div class="card stack-8">' + codeRow(game) + '</div>';
-  if (!host) html += hostRecoveryBlock();
   html += '<div class="t-center"><button onclick="handleOpenHostMenu()" class="linkish">' + escapeHtml(toolsMenuLabel(game)) + '</button></div>';
 
+  // Publishing is the host's last job, so it is the host's one big button.
+  // Everyone else can still forward the same text.
   html += '</div>' +
     '<div class="dock dock--wide"><div class="dock__in stack-8">' +
-      '<button data-share-wa onclick="handleShareWhatsApp()" class="btn btn--good btn--lg btn--block">' + icon('share', 20) + 'שתף בוואטסאפ</button>' +
+      waLink(buildWhatsAppText(game), host ? 'פרסם את הקבוצות בוואטסאפ' : 'שתף בוואטסאפ', 'btn btn--good btn--lg btn--block', ' data-share-wa') +
       '<button data-copy-teams onclick="handleCopyTeams()" class="btn btn--ghost btn--block">' + icon('copy', 18) + 'העתק כטקסט</button>' +
     '</div></div>' +
     toolsSheets(game, anim) +
@@ -2207,33 +2400,32 @@ window.handleOpenRosterRestart = () => {
 window.handleAskRosterRestart = () => { state.confirmReset = 'roster'; haptic(20); render(); };
 window.handleCancelRosterRestart = () => { state.rosterEdit = false; state.confirmReset = ''; state.input = ''; render(); };
 window.handleJoinCodeInput = v => { state.joinCode = v; };
-window.handleNicknameInput = v => { state.nickname = v; };
-window.handleHostKeyInput = v => { state.hostKeyInput = v; };
 window.handleInitGame = initGame;
 window.handleToggleCaptain = toggleCaptain;
 window.handleRandomizeColors = randomizeColors;
 window.handleAssignTeamColor = assignTeamColor;
 window.handleFinalizeCaptains = finalizeCaptains;
-window.handleJoinGame = joinGame;
-window.handleClaimTeam = claimTeam;
+window.handleClaimRole = id => claimRole(id, false);
+window.handleTakeoverRole = id => claimRole(id, true);
+window.handleTakeoverHost = takeoverHost;
+window.handleWatchOnly = watchOnly;
+window.handleChooseRole = () => { state.hostMenu = false; state.choosingRole = true; window.scrollTo(0, 0); render(); };
+window.handleCloseRolePicker = () => { state.choosingRole = false; render(); };
 window.handleReleaseTeam = id => { state.hostMenu = false; return releaseTeam(id); };
 window.handleToggleManualOrder = toggleManualOrder;
 window.handleMoveDraftOrder = moveDraftOrder;
 window.handleRandomizeDraftOrder = randomizeDraftOrder;
 window.handleStartDraft = () => startDraft(false);
-window.handleStartDraftAnyway = () => {
-  if (!confirm('להתחיל בלי כל הקפטנים? אתה תנהל את הקבוצות שאין להן קפטן מחובר.')) return;
-  startDraft(true);
-};
-window.handleMakePick = makePick;
+// No native confirm() here: WhatsApp's in-app browser can swallow it, which
+// would leave the host unable to start. The link itself says what happens.
+window.handleStartDraftAnyway = () => startDraft(true);
+window.handleSelectPlayer = selectPlayer;
+window.handleClearSelection = clearSelection;
 window.handleConfirmPick = confirmPick;
 window.handleUndoPick = () => { state.hostMenu = false; return undoPick(); };
-window.handleCancelPending = cancelPendingPick;
 // Kept as an alias so nothing can reach the write without the confirm step.
 window.handleResetDraft = () => window.handleAskResetDraft();
-window.handleShareWhatsApp = shareWhatsApp;
 window.handleFullReset = () => { state.hostMenu = false; fullReset(); };
-window.handleRecoverHost = recoverHost;
 window.handleCopyTeams = () => {
   if (!state.gameData) return;
   copyText(buildWhatsAppText(state.gameData), () => showSuccess('הטקסט הועתק'));
@@ -2257,8 +2449,7 @@ window.handleOpenLastGame = () => {
   subscribeToGame();
 };
 window.handleCopyLink = () => {
-  const url = window.location.origin + window.location.pathname + '#' + state.gameId;
-  copyText(url, () => {
+  copyText(inviteUrl(), () => {
     // Confirm on the button itself rather than in a toast: the feedback
     // belongs where the finger already is.
     const label = document.querySelector('[data-copy-btn] span');
