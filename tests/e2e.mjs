@@ -430,7 +430,7 @@ try {
       await picker.locator('[data-confirm-pick]').click();
       await Promise.all(live.map(p => waitPickNo(p, n + 2)));
       await picker.waitForFunction(() => !document.querySelector('[data-saving]'), null, { timeout: T });
-      await host.locator('button[aria-label="כלי מארגן"]').click();
+      await host.locator('[data-menu]').click();
       await host.locator('[data-undo]').click();
       await Promise.all(live.map(p => waitPickNo(p, n + 1)));
       const back = await Promise.all(live.map(p => p.locator(`[data-pick-player="${undone}"]`).count()));
@@ -592,39 +592,64 @@ try {
   const made2 = g2.picks.length;
   check('picks by host and captain recorded in order', made2 >= 2 && g2.picks.every((p, i) => p.seq === i), String(made2));
 
-  await host2.locator('button[aria-label="כלי מארגן"]').click();
+  await host2.locator('[data-menu]').click();
   await host2.locator('[data-undo]').click();
   await waitPickNo(red2, made2);
   check('host undo removes the last pick for everyone', (await readGame(host2, game2)).picks.length === made2 - 1);
 
-  // Only the organizer can wipe the draft — not a watcher, not a captain.
+  // Anyone can reset — a watcher, a captain — always behind a confirm step.
   const viewer2 = await device('viewer2', small);
   await viewer2.goto(gameUrl(game2));
   await viewer2.locator('[data-watch]').click();
   await viewer2.waitForSelector('[data-turn-banner]', { timeout: T });
-  await viewer2.locator('button[aria-label="אפשרויות"]').click();
-  await red2.locator('button[aria-label="אפשרויות"]').click();
-  check('watchers and captains get no reset in their menu',
-    await viewer2.locator('[data-reset]').count() === 0 && await red2.locator('[data-reset]').count() === 0);
-  await red2.locator('[data-host-menu] button[aria-label="סגירה"]').click();
+  await viewer2.locator('[data-menu]').click();
+  check('everyone\'s menu has both resets — watchers included',
+    await viewer2.locator('[data-reset]').count() === 1 && await viewer2.locator('[data-restart-roster]').count() === 1);
+  const before = (await readGame(viewer2, game2)).picks.length;
+  await viewer2.locator('[data-reset]').click();
+  await viewer2.waitForSelector('[data-reset-confirm]', { timeout: T });
+  await shot(viewer2, '09-reset-confirm');
+  await viewer2.locator('[data-reset-confirm-no]').click();
+  await sleep(PROD ? 2000 : 800);
+  check('reset asks first — and "ביטול" changes nothing',
+    await viewer2.locator('[data-reset-confirm]').count() === 0 && (await readGame(viewer2, game2)).picks.length === before && before > 0);
+
+  await red2.locator('[data-menu]').click();
+  await red2.locator('[data-reset]').click();
+  await red2.locator('[data-reset-confirm-yes]').click();
+  await Promise.all([host2, red2, viewer2].map(p => p.waitForSelector('[data-lobby-count]', { timeout: T })));
+  const gReset = await readGame(host2, game2);
+  check('a captain confirms the reset: picks gone, teams and captains kept, every phone back in the lobby',
+    gReset.status === 'lobby' && gReset.picks.length === 0 && gReset.teams.length === 3 && gReset.participants.length >= 1);
 
   // The organizer's phone is gone: one tap in the menu continues on another.
+  await viewer2.locator('[data-menu]').click();
   await viewer2.locator('[data-takeover-host]').click();
   await viewer2.waitForFunction(() => /מארגן/.test(document.querySelector('[data-me]')?.textContent || ''), null, { timeout: T });
   await host2.waitForFunction(() => (window.__toasts || []).some(t => /המארגן ממשיך/.test(t)), null, { timeout: T });
   check('the organizer continues on another phone with one tap — no code — and the old phone is told', true);
 
-  // Start the evening over from a new list, on the same link.
-  await viewer2.locator('button[aria-label="כלי מארגן"]').click();
-  await viewer2.locator('[data-restart-roster]').click();
-  await viewer2.locator('#playerInput').fill(['אלון', 'יוסי', 'דני', 'משה', 'רועי', 'אבי'].join('\n'));
-  await viewer2.locator('[data-restart-submit]').click();
-  await viewer2.locator('[data-reset-confirm-yes]').click();
-  await viewer2.waitForSelector('.namegrid', { timeout: T });
-  await red2.waitForSelector('[data-waiting-host]', { timeout: T });
-  const g3 = await readGame(viewer2, game2);
-  check('restart with a new list: same link, everyone back to the start, seats cleared',
-    g3.status === 'captains' && g3.players.length === 6 && g3.participants.length === 0 && g3.picks.length === 0);
+  // A captain starts the evening over from a new list: same link, and they
+  // become the organizer who picks the new captains.
+  await red2.locator('[data-menu]').click();
+  await red2.locator('[data-restart-roster]').click();
+  await red2.locator('#playerInput').fill(['אלון', 'יוסי', 'דני', 'משה', 'רועי', 'אבי'].join('\n'));
+  await red2.locator('[data-restart-submit]').click();
+  await red2.waitForSelector('[data-reset-confirm]', { timeout: T });
+  await red2.locator('[data-reset-confirm-yes]').click();
+  await red2.waitForSelector('.namegrid', { timeout: T });
+  await viewer2.waitForSelector('[data-waiting-host]', { timeout: T });
+  const g3 = await readGame(red2, game2);
+  check('restart with a new list (by a captain): same link, seats cleared, the restarter now organizes',
+    g3.status === 'captains' && g3.players.length === 6 && g3.participants.length === 0 && g3.picks.length === 0 &&
+    /מארגן/.test(await red2.locator('[data-me]').innerText()));
+
+  // Reset is reachable from setup and waiting screens too.
+  await red2.locator('[data-menu]').click();
+  await viewer2.locator('[data-menu]').click();
+  await shot(red2, '10-setup-menu');
+  check('setup and waiting screens have the ⋯ menu with "start over"',
+    await red2.locator('[data-restart-roster]').count() === 1 && await viewer2.locator('[data-restart-roster]').count() === 1);
 
   check('no JavaScript errors on any device', pageErrors.length === 0, pageErrors.join(' | '));
 } catch (e) {

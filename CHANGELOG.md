@@ -1,5 +1,18 @@
 # Changelog
 
+## Anyone can reset, from every screen, behind a confirm — 2026-10-14
+
+- **Reset is everyone's again** — organizer, captain or watcher — and the ⋯ menu
+  is now in the top bar of every screen of a draft, including captain setup and
+  the waiting screen (which had no way to reset at all).
+- Both depths — *אפס את כל הבחירות* and *התחל מאפס — רשימה חדשה* — go through the
+  "בטוח?" sheet: *כן, אפס* or *ביטול*. Tapping outside cancels.
+- Starting over with a new list makes whoever did it the organizer of the new
+  draft (picking captains needs one); the sheet says so before they confirm.
+- Undo and freeing a seat stay with the organizer.
+
+Verified: emulator 75/75 (21 players) and 72/72 (18); production 72/72 (18).
+
 ## One organizer, three captains, one link — 2026-10-14
 
 A second pass that strips the flow down to exactly what an evening needs.
@@ -23,7 +36,7 @@ A second pass that strips the flow down to exactly what an evening needs.
   manual order controls are gone; the kit a captain gets decides when they pick.
 - **Equal teams only.** The list must split into three equal teams (6, 9, 12, 15,
   18 or 21); anything else is refused on the paste screen with the fix spelled out.
-- **Reset is the organizer's alone.** Captains' menus offer only "change team".
+- Reset was briefly the organizer's alone (reverted — see above).
 - Organizer wording throughout (*מארגן*); no schema or rules change.
 
 Verified: emulator 21 players 72/72 and the 18-player WhatsApp list 69/69;

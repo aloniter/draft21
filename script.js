@@ -1099,11 +1099,11 @@ async function undoPick() {
   });
 }
 
-// The organizer's "do the picks again": captains and teams stay, the picks go.
-// Behind its own confirm sheet (`confirmReset`), because it touches everyone.
+// "Do the picks again": captains and teams stay, the picks go. Anyone in the
+// draft can do it — waiting for one particular phone is how evenings stall —
+// so the guard is the explicit confirm sheet (`confirmReset`), not a role.
 async function resetDraft() {
   const ok = await mutate('שגיאה באיפוס', game => {
-    if (game.hostId !== state.clientId) throw new Error('רק המארגן יכול לאפס');
     if (!(game.teams || []).length) throw new Error('אין קבוצות לאפס');
     // Participants and their team claims are kept on purpose — wiping them
     // used to force every captain to rejoin and re-claim.
@@ -1130,9 +1130,9 @@ async function restartWithRoster() {
   const parsed = parseRoster(state.input);
   if (parsed.errors.length) { showError(parsed.errors[0]); return; }
   const players = parsed.names.map((name, index) => ({ id: 'p' + index, name }));
+  const wasHost = isHost(state.gameData);
 
   const ok = await mutate('שגיאה באיפוס', game => {
-    if (game.hostId !== state.clientId) throw new Error('רק המארגן יכול לאפס');
     return {
       players,
       status: 'captains',
@@ -1149,6 +1149,12 @@ async function restartWithRoster() {
   });
   if (!ok) return;
 
+  // Picking captains is the organizer's job, so whoever starts the evening over
+  // — list in hand — becomes the organizer; otherwise a restart by a captain
+  // would land everyone on a screen nobody present can act on. A separate
+  // write: the rules only ever let hostId change on its own.
+  if (!wasHost) await mutate('שגיאה בהעברת הניהול', () => ({ hostId: state.clientId }));
+
   state.rosterEdit = false;
   state.confirmReset = '';
   state.input = '';
@@ -1159,7 +1165,7 @@ async function restartWithRoster() {
   // The snapshot that lands mid-write repaints while the editor is still up, so
   // leaving it is not enough to leave the screen — paint again once it is.
   render();
-  showNotice('מתחילים מחדש — בחר קפטנים מהרשימה החדשה');
+  showNotice(wasHost ? 'מתחילים מחדש — בחר קפטנים מהרשימה החדשה' : 'מתחילים מחדש — אתה המארגן עכשיו, בחר קפטנים');
 }
 
 // Leaves on this phone only — the game itself is untouched and the link
@@ -1292,7 +1298,7 @@ function render() {
   // Editing the roster of a game that exists outranks its phase: the draft on
   // screen is exactly what this screen is about to replace.
   if (state.rosterEdit && game) html = renderImport(game, anim);
-  else if (state.phase === 'captains' && game) html = renderCaptains(game);
+  else if (state.phase === 'captains' && game) html = renderCaptains(game, anim);
   else if (state.phase === 'lobby' && game) html = renderLobby(game, anim);
   else if (state.phase === 'draft' && game) html = renderDraft(game, anim);
   else if (state.phase === 'complete' && game) html = renderComplete(game, anim);
@@ -1397,6 +1403,11 @@ function meChip(game) {
       '<span class="me__name">' + escapeHtml(name) + '</span>' +
       (role ? '<span class="me__role">' + escapeHtml(role) + '</span>' : '') +
     '</span></' + tag + '>';
+}
+
+// The ⋯ button: the same place on every screen of a draft, for everyone.
+function menuButton(game) {
+  return '<button class="btn btn--quiet btn--icon" data-menu onclick="handleOpenHostMenu()" aria-label="' + escapeHtml(toolsMenuLabel(game)) + '">' + icon('dots', 20) + '</button>';
 }
 
 function appBar(game, opts) {
@@ -1678,8 +1689,8 @@ function renderImport(game, anim) {
 // The organizer's whole setup on one screen: tap three names, check who got
 // which kit, share. Kits follow tap order — red, white, black — and red picks
 // first, so the review rows are also the pick order.
-function renderCaptains(game) {
-  if (!isHost(game)) return renderWaitingForHost(game);
+function renderCaptains(game, anim) {
+  if (!isHost(game)) return renderWaitingForHost(game, anim);
 
   const picked = state.captains.length;
   const assignedCount = state.captains.filter(id => TEAM_COLORS.indexOf(state.teamAssignments[id]) > -1).length;
@@ -1687,7 +1698,7 @@ function renderCaptains(game) {
   const kitOf = id => state.teamAssignments[id] || '';
 
   let html = '<div class="scr" style="--glow:rgba(255,197,61,.20);--dock-h:96px">' +
-    appBar(game, { title: 'הכנת הדראפט' }) +
+    appBar(game, { title: 'הכנת הדראפט', trailing: menuButton(game) + meChip(game) }) +
     '<div class="wrap page stack-24">' +
 
     '<div class="stack-8">' +
@@ -1739,14 +1750,15 @@ function renderCaptains(game) {
           : (assignedCount < 3 ? 'תן צבע לכל קפטן' : '<span>מוכן — שתף את הדראפט</span>' + icon('back', 20))) +
       '</button>' +
     '</div></div>' +
+    toolsSheets(game, anim) +
     '</div>';
   return html;
 }
 
 // Anyone who opens the link during the organizer's minute of setup.
-function renderWaitingForHost(game) {
+function renderWaitingForHost(game, anim) {
   return '<div class="scr" style="--glow:rgba(255,197,61,.16)">' +
-    appBar(game) +
+    appBar(game, { trailing: menuButton(game) + meChip(game) }) +
     '<div class="wrap page stack-16">' +
       '<div class="card stack-12 t-center">' +
         '<div class="row center" style="gap:8px"><span class="livedot t-volt"></span><span class="t-micro">מחובר</span></div>' +
@@ -1758,7 +1770,9 @@ function renderWaitingForHost(game) {
           '<div class="skeleton" style="height:54px"></div>' +
         '</div>' +
       '</div>' +
-    '</div></div>';
+    '</div>' +
+    toolsSheets(game, anim) +
+    '</div>';
 }
 
 /* ------------------------------------------------------------------ */
@@ -1815,7 +1829,7 @@ function renderLobby(game, anim) {
   }
 
   let html = '<div class="scr" style="--glow:rgba(90,150,255,.20);--dock-h:' + (host ? (missing.length ? '124px' : '96px') : '76px') + '">' +
-    appBar(game, { title: 'לפני הפתיחה' }) +
+    appBar(game, { title: 'לפני הפתיחה', trailing: menuButton(game) + meChip(game) }) +
     '<div class="wrap page stack-24">' +
     (asking ? teamQuestion(game) : '') +
 
@@ -2013,7 +2027,7 @@ function renderDraft(game, anim) {
   const sel = state.selected ? state.selected.playerId : '';
 
   let html = '<div class="scr" style="--glow:' + (turn && turn.isMine ? 'rgba(216,255,62,.24)' : 'rgba(30,180,120,.16)') + ';--dock-h:0px">' +
-    appBar(game, { trailing: '<button class="btn btn--quiet btn--icon" onclick="handleOpenHostMenu()" aria-label="' + escapeHtml(toolsMenuLabel(game)) + '">' + icon('dots', 20) + '</button>' + meChip(game) }) +
+    appBar(game, { trailing: menuButton(game) + meChip(game) }) +
     '<div class="wrap page stack-16">' +
     draftHud(game, turn, anim) +
     pulseBar(game, turn);
@@ -2113,8 +2127,8 @@ function toolsSheet(game, anim) {
       '<button class="btn btn--quiet btn--icon" onclick="handleCloseHostMenu()" aria-label="סגירה">' + icon('x', 18) + '</button></div>';
 
   if (host) {
-    // The organizer's few controls. Undo and freeing a seat are surgical;
-    // the two resets are loud and each has its own "are you sure?".
+    // The organizer's surgical controls: quiet changes the wrong person could
+    // make without anyone noticing, so they stay the organizer's.
     if (state.phase === 'draft' && made > 0) {
       html += '<button data-undo onclick="handleUndoPick()" class="btn btn--ghost btn--block">' + icon('undo', 18) + 'בטל את הבחירה האחרונה</button>';
     }
@@ -2126,10 +2140,6 @@ function toolsSheet(game, anim) {
           '<span class="team-dot"></span>פנה את ' + escapeHtml(colorHe(t.color)) + ' — אני אבחר בשבילם</button>';
       });
     }
-    html += '<button data-reset onclick="handleAskResetDraft()" class="btn btn--danger btn--block">' + icon('refresh', 18) +
-        resetActionLabel() + '</button>' +
-      '<button data-restart-roster onclick="handleOpenRosterRestart()" class="btn btn--danger btn--block">' + icon('list', 18) +
-        'התחל מאפס — רשימה חדשה</button>';
   } else {
     if (live) {
       html += '<button data-change-role onclick="handleChooseRole()" class="btn btn--ghost btn--block">' + icon('refresh', 18) +
@@ -2139,13 +2149,24 @@ function toolsSheet(game, anim) {
     // One tap, no code; it lives here, out of everyone else's way.
     html += '<button data-takeover-host onclick="handleTakeoverHost()" class="linkish">אני המארגן — המשך בטלפון הזה</button>';
   }
-  html += '<button onclick="handleFullReset()" class="linkish">יציאה מהדראפט במכשיר הזה</button>' +
+  // The resets are everyone's, on every screen: loud, obvious, and each behind
+  // its own "בטוח?" sheet. Picks-only once there are teams to keep; from the
+  // player list itself at any point.
+  if ((game.teams || []).length) {
+    html += '<button data-reset onclick="handleAskResetDraft()" class="btn btn--danger btn--block">' + icon('refresh', 18) +
+      resetActionLabel() + '</button>';
+  }
+  html += '<button data-restart-roster onclick="handleOpenRosterRestart()" class="btn btn--danger btn--block">' + icon('list', 18) +
+      'התחל מאפס — רשימה חדשה</button>' +
+    '<div class="t-micro t-dim t-center">כל אחד יכול לאפס — תמיד עם אישור לפני.</div>' +
+    '<button onclick="handleFullReset()" class="linkish">יציאה מהדראפט במכשיר הזה</button>' +
     '</div></div>';
   return html;
 }
 
-// A second, explicit tap that spells out exactly what disappears. Tapping the scrim cancels, so the
-// dangerous button is never the easy way out of the sheet.
+// The confirm step every reset goes through: a second, explicit tap that spells
+// out exactly what disappears. Tapping the scrim cancels, so the dangerous
+// button is never the easy way out of the sheet.
 function resetConfirmSheet(game, anim) {
   if (!state.confirmReset) return '';
   const roster = state.confirmReset === 'roster';
@@ -2155,8 +2176,8 @@ function resetConfirmSheet(game, anim) {
 
   const kicker = roster ? 'התחלה מאפס — רשימה חדשה' : resetActionLabel();
   const headline = roster
-    ? 'לאפס את הדראפט מההתחלה?'
-    : (done ? 'להתחיל דראפט חדש?' : 'לאפס את הדראפט?');
+    ? 'בטוח שמתחילים מאפס?'
+    : (done ? 'בטוח שמתחילים דראפט חדש?' : 'בטוח שלאפס את כל הבחירות?');
   // What actually disappears, stated in full. A reset that anyone can trigger
   // has to say out loud how far back it goes.
   const body = roster
@@ -2166,7 +2187,7 @@ function resetConfirmSheet(game, anim) {
         ? (done ? 'הקבוצות שנסגרו יימחקו' : '<span class="num">' + made + '</span> בחירות יימחקו') + ' וכולם חוזרים לאולם ההמתנה.'
         : 'כולם חוזרים לאולם ההמתנה.') + ' הקפטנים והקבוצות יישמרו.';
   const note = roster
-    ? 'אותו קישור — אין צורך לשלוח חדש. הקפטנים פשוט בוחרים שוב את הקבוצה שלהם.'
+    ? 'אותו קישור — אין צורך לשלוח חדש. הקפטנים פשוט בוחרים שוב את הקבוצה שלהם.' + (isHost(game) ? '' : ' אתה תהיה המארגן של הדראפט החדש.')
     : 'האיפוס חל על כל המשתתפים, לא רק על המכשיר שלך.';
 
   const enter = anim && anim.confirmResetOpened ? ' sheet--in' : '';
@@ -2196,7 +2217,7 @@ function renderComplete(game, anim) {
   // The results are the one screen people crowd around. On anything wider than
   // a phone the three teams sit side by side instead of stacking.
   let html = '<div class="scr" style="--glow:rgba(255,176,32,.24);--dock-h:150px">' +
-    appBar(game, { title: 'התוצאות', wide: true }) +
+    appBar(game, { title: 'התוצאות', wide: true, trailing: menuButton(game) + meChip(game) }) +
     '<div class="wrap wrap--wide page stack-24">' +
 
     '<div class="stack-12 t-center anim-rise">' +

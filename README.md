@@ -77,7 +77,8 @@ the backend itself:
   and catching up, a captain moving to a new phone, the organizer moving to a
   new phone
 - a missing captain (host starts without them and picks for them), a late captain
-  joining mid-draft, only the organizer able to reset, restart with a new list
+  joining mid-draft, reset by anyone behind a confirm (cancel changes nothing),
+  a captain starting over with a new list and becoming the organizer
 - every team the same size, every player drafted once, identical final teams on
   every device, and the published WhatsApp text
 
@@ -174,7 +175,7 @@ and nothing can drift out of sync.
   its per-device id in `localStorage`. Nothing to choose, no code. The organizer
   pastes the list, taps three captains (kits follow tap order: red, white, black,
   changeable in the review rows), taps *מוכן — שתף את הדראפט*, and sends the link.
-  Only the organizer starts the draft, undoes a pick, frees a seat, or resets.
+  Only the organizer starts the draft, undoes a pick, or frees a seat.
 - **Captains join in one tap.** The link opens the live board — teams, captains,
   players, status — with one question above it, *באיזו קבוצה אתה?*, and a big card
   per team ("אדום · יוסי"). A tap claims the seat (a claim in `participants`, keyed
@@ -192,14 +193,16 @@ and nothing can drift out of sync.
   at, so a stale screen, a double tap, or two tabs of the same captain can never
   record a pick twice or in the wrong slot. The picking phone shows the pick
   instantly while it saves.
-- **Resetting is the organizer's**, from the ⋯ menu, at two depths, each behind
-  its own explicit "are you sure?" sheet:
+- **Anyone can reset** — organizer, captain or watcher — from the ⋯ menu in the
+  top bar, which is on every screen of a draft (setup and waiting included). Two
+  depths, each behind its own "בטוח?" sheet with *כן, אפס* / *ביטול*:
   - *אפס את כל הבחירות* — the picks go, the captains and teams stay, everyone
     lands back in the lobby.
   - *התחל מאפס — רשימה חדשה* — the evening starts over from the player list
-    itself. The organizer edits the roster (prefilled with the current names), and
-    one write replaces it, clears the teams, seats and picks, and goes back to
-    captain selection. Same link, so nobody has to be re-invited.
+    itself. Edit the roster (prefilled with the current names); one write replaces
+    it, clears the teams, seats and picks, and goes back to captain selection. Same
+    link, so nobody has to be re-invited. Whoever does it becomes the organizer of
+    the new draft, since picking captains is the organizer's job.
 - **Captains** control only their own team's turn. If a team has no captain the
   organizer picks for it, so a missing captain can never stall a draft: the
   organizer can start without them, free a seat whose captain left, and the
