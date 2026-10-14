@@ -208,6 +208,8 @@ const pixel = devices['Pixel 7'];
 const small = { viewport: { width: 360, height: 740 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true };
 
 const host = await device('host', pixel);
+// The step in progress, printed if the run dies, so a timeout names its place.
+let step = 'start';
 let gameId = '';
 let game2 = '';
 
@@ -321,6 +323,17 @@ try {
   await watcher.waitForSelector('[data-waiting-start]', { timeout: T });
   check('refresh keeps "just watching" too', true);
 
+  // The bare address is always a clean start; the draft in progress is one
+  // tap away on the home screen.
+  await host.goto(BASE + QUERY);
+  await host.waitForSelector('[data-new-draft]', { timeout: T });
+  check('the bare address opens the home screen, not the last draft — with a "back to it" button',
+    await host.locator('[data-last-game]').count() === 1 && await host.locator('[data-invite]').count() === 0);
+  await host.locator('[data-last-game]').click();
+  await host.waitForSelector('[data-invite]', { timeout: T });
+  check('"חזרה לדראפט האחרון" brings the organizer back, still the organizer',
+    /מארגן/.test(await host.locator('[data-me]').innerText()));
+
   /* ---------------- 3. Draft ---------------- */
   section(`3. Live draft — ${ROSTER.length - 3} picks, snake order`);
   await host.locator('[data-start-draft]').click();
@@ -342,6 +355,7 @@ try {
 
   for (let n = 0; n < TOTAL; n++) {
     const color = expectedColor(n);
+    step = `pick ${n + 1} (${color})`;
     // Everyone online agrees on whose turn it is and which pick this is.
     const live = everyone.filter(p => !p.offline);
     await Promise.all(live.map(p => waitPickNo(p, n + 1)));
@@ -364,6 +378,7 @@ try {
     // Race: the same captain in two tabs confirms two different players at
     // the same instant. Exactly one pick may land.
     if (!raceDone && n >= 2) {
+      step = `race at pick ${n + 1}`;
       const twin = await picker.ctx.newPage();
       allPages.push(twin);
       twin.label = picker.label + '-tab2';
@@ -404,6 +419,7 @@ try {
     // Recovery: Red's phone "dies"; Red opens the link on a new phone and
     // takes the seat over with one tap. The old phone is told.
     if (!takeoverDone && n >= 6 && color !== 'Red') {
+      step = `takeover at pick ${n + 1}`;
       const newRed = await device('red-new-phone', iphone);
       await newRed.goto(gameUrl(gameId));
       await newRed.waitForSelector('[data-reclaim="Red"]', { timeout: T });
@@ -425,6 +441,7 @@ try {
     // The organizer undoes a pick: it comes off every board and the same
     // captain is on the clock again.
     if (n === 4) {
+      step = `undo at pick ${n + 1}`;
       const undone = await picker.locator('[data-pick-player]').first().getAttribute('data-pick-player');
       await picker.locator(`[data-pick-player="${undone}"]`).click();
       await picker.locator('[data-confirm-pick]').click();
@@ -441,6 +458,7 @@ try {
 
     // Refresh in the middle of the draft — a captain and the host.
     if (!refreshDone && n === 5) {
+      step = `refresh at pick ${n + 1}`;
       await Promise.all([cap.Black.reload(), host.reload()]);
       await Promise.all([waitPickNo(cap.Black, n + 1), waitPickNo(host, n + 1)]);
       check('refresh mid-draft: same pick, same turn, role kept, nothing lost',
@@ -451,6 +469,7 @@ try {
 
     // A device drops off the network while others keep drafting.
     if (!offlineDone && n >= 9 && color !== 'White') {
+      step = `offline/reconnect at pick ${n + 1}`;
       cap.White.offline = true;
       await cap.White.ctx.setOffline(true);
       await cap.White.waitForSelector('[data-offline-bar]', { timeout: T });
@@ -494,6 +513,7 @@ try {
 
   /* ---------------- 4. Results ---------------- */
   section('4. Final teams');
+  step = 'final teams';
   const finalDevices = everyone.filter(p => !p.isClosed());
   await Promise.all(finalDevices.map(p => p.waitForSelector('[data-complete]', { timeout: T })));
   check(`all ${finalDevices.length} devices reach the final teams`, true);
@@ -537,6 +557,7 @@ try {
 
   /* ---------------- 6. Missing captain ---------------- */
   section('6. A captain is missing — the draft still runs');
+  step = 'missing captain';
   const host2 = await device('host2', pixel);
   await host2.goto(BASE + QUERY);
   await host2.locator('[data-new-draft]').click();
@@ -653,7 +674,7 @@ try {
 
   check('no JavaScript errors on any device', pageErrors.length === 0, pageErrors.join(' | '));
 } catch (e) {
-  check('run completed without an exception', false, e && e.message ? e.message.split('\n')[0] : String(e));
+  check('run completed without an exception', false, `during ${step}: ` + (e && e.message ? e.message.split('\n')[0] : String(e)));
   console.log(e && e.stack ? e.stack.split('\n').slice(0, 6).join('\n') : '');
   if (pageErrors.length) console.log('        page errors: ' + pageErrors.join(' | '));
   for (const p of allPages) {

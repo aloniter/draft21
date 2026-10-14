@@ -7,7 +7,7 @@
  * IMPORTANT: bump CACHE whenever any shell file changes, otherwise installed
  * phones keep serving the previous version until the cache name differs.
  */
-const CACHE = 'draft21-shell-v8';
+const CACHE = 'draft21-shell-v9';
 
 const SHELL = [
   './',

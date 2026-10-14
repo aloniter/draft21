@@ -211,7 +211,7 @@ let state = {
   //            re-establishes its stream routinely, so this only drives the
   //            banner and must never block an action.
   netDown: !navigator.onLine, stale: false, offlineBanner: false, offlineTimer: null, dataSig: '',
-  arrivedViaHash: false, firstSnapshot: true, lastCompleteGame: '',
+  arrivedViaHash: false, firstSnapshot: true, lastGame: '',
   // -- presentation-only state -------------------------------------------
   // homeView: the home screen is now two decisions ("new game" / "join")
   // instead of one wall of controls; creating opens its own import step.
@@ -589,7 +589,7 @@ function settleLocalState(data) {
 }
 
 function rememberCompletedGame(id) {
-  state.lastCompleteGame = id;
+  state.lastGame = id;
   try { localStorage.setItem('d21_lastGame', id); } catch (e) {}
 }
 
@@ -668,20 +668,19 @@ function init() {
     state.teamAssignments = {};
   }
 
-  state.lastCompleteGame = localStorage.getItem('d21_lastGame') || '';
 
   window.addEventListener('online', reconnect);
   window.addEventListener('offline', () => updateConnState({ netDown: true }));
 
   const hashId = window.location.hash.replace('#', '').trim();
-  const savedGameId = localStorage.getItem('d21_gameId');
-  // A hash means the user followed a shared link and always wins.
+  // A link with a draft in it opens that draft. The bare address always opens
+  // the home screen — a clean start — and the draft this phone was last in is
+  // one tap away on it, rather than reopening by itself and trapping someone
+  // who came to start a new one.
+  state.lastGame = localStorage.getItem('d21_gameId') || localStorage.getItem('d21_lastGame') || '';
   state.arrivedViaHash = !!hashId;
   if (hashId) {
     setGameId(hashId);
-    subscribeToGame();
-  } else if (savedGameId) {
-    setGameId(savedGameId);
     subscribeToGame();
   } else {
     render();
@@ -1581,10 +1580,10 @@ function renderHome() {
       '<button data-new-draft onclick="handleGoCreate()" class="btn btn--volt btn--lg btn--block anim-rise anim-rise-1">' + icon('plus', 20) + 'דראפט חדש</button>' +
     '</div>';
 
-  if (state.lastCompleteGame) {
+  if (state.lastGame) {
     html += '<button data-last-game onclick="handleOpenLastGame()" class="card row anim-rise anim-rise-3" style="width:100%;text-align:start">' +
-      '<span class="trophy" style="width:40px;height:40px;border-radius:13px;font-size:20px">🏆</span>' +
-      '<span class="grow"><span class="t-lg" style="display:block">הדראפט הקודם</span><span class="t-meta">הקבוצות עדיין שמורות — לחץ להצגה</span></span>' +
+      '<span class="trophy" style="width:40px;height:40px;border-radius:13px;font-size:20px">⚽</span>' +
+      '<span class="grow"><span class="t-lg" style="display:block">חזרה לדראפט האחרון</span><span class="t-meta">הדראפט שפתחת בטלפון הזה — לחץ כדי לחזור</span></span>' +
       icon('back', 18) + '</button>';
   }
 
@@ -2311,11 +2310,11 @@ window.handleCopyTeams = () => {
 };
 window.handleReconnect = reconnect;
 window.handleOpenLastGame = () => {
-  if (!state.lastCompleteGame) return;
+  if (!state.lastGame) return;
   state.loadError = '';
   state.arrivedViaHash = true;
   state.firstSnapshot = true;
-  setGameId(state.lastCompleteGame);
+  setGameId(state.lastGame);
   subscribeToGame();
 };
 window.handleCopyLink = () => {
