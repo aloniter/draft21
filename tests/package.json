@@ -1,0 +1,14 @@
+{
+  "name": "draft21-tests",
+  "private": true,
+  "type": "module",
+  "description": "End-to-end multiplayer tests for Draft21. Kept out of the repo root so the static deploy never installs them.",
+  "scripts": {
+    "test": "firebase emulators:exec --config ../firebase.json --only firestore --project draft21-eabc3 \"node e2e.mjs --roster=21 && node e2e.mjs --roster=18\"",
+    "test:prod": "node e2e.mjs --prod --roster=18"
+  },
+  "devDependencies": {
+    "firebase-tools": "^14.0.0",
+    "playwright": "1.56.1"
+  }
+}

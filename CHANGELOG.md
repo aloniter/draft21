@@ -1,5 +1,129 @@
 # Changelog
 
+## Anyone can reset, from every screen, behind a confirm — 2026-10-14
+
+- **Reset is everyone's again** — organizer, captain or watcher — and the ⋯ menu
+  is now in the top bar of every screen of a draft, including captain setup and
+  the waiting screen (which had no way to reset at all).
+- Both depths — *אפס את כל הבחירות* and *התחל מאפס — רשימה חדשה* — go through the
+  "בטוח?" sheet: *כן, אפס* or *ביטול*. Tapping outside cancels.
+- Starting over with a new list makes whoever did it the organizer of the new
+  draft (picking captains needs one); the sheet says so before they confirm.
+- Undo and freeing a seat stay with the organizer.
+
+Verified: emulator 75/75 (21 players) and 72/72 (18); production 72/72 (18).
+
+## One organizer, three captains, one link — 2026-10-14
+
+A second pass that strips the flow down to exactly what an evening needs.
+
+- **No codes anywhere.** The home screen has one button, *דראפט חדש*; "join with
+  code" is gone, and the game id appears only inside the link.
+- **The organizer is whoever created the draft** — remembered on that phone, never
+  chosen. The host card and host role are gone from what everyone else sees; the
+  one-tap "אני המארגן — המשך בטלפון הזה" fallback lives in the ⋯ menu only.
+- **Setup in under a minute:** paste → tap three captains (red, white, black in tap
+  order) → a review row per captain with the three kits beside the name → *מוכן —
+  שתף את הדראפט* → *שלח בוואטסאפ*.
+- **Captains join from the board, not a gate.** The link opens the live lobby or
+  draft — teams, captains, players, status — with *באיזו קבוצה אתה?* above it and
+  a large card per team. One tap. Taken teams say so with "זה אני — המשך כאן".
+  "אני לא קפטן — רק צופה" folds the question away for everyone else. Replaces the
+  full-screen role picker.
+- **Organizer lobby** lists *קפטן אדום · …* with *מחובר* / *ממתין*; *התחל דראפט*
+  unlocks at three of three (start-without-them stays as a small link).
+- **Fixed snake order: red → white → black → black → white → red.** The random /
+  manual order controls are gone; the kit a captain gets decides when they pick.
+- **Equal teams only.** The list must split into three equal teams (6, 9, 12, 15,
+  18 or 21); anything else is refused on the paste screen with the fix spelled out.
+- Reset was briefly the organizer's alone (reverted — see above).
+- Organizer wording throughout (*מארגן*); no schema or rules change.
+
+Verified: emulator 21 players 72/72 and the 18-player WhatsApp list 69/69;
+production Firestore 18 players 69/69 — including organizer undo on all phones,
+two tabs racing for one pick, refresh, offline/reconnect, a captain and the
+organizer each moving to a new phone, and the publish link.
+
+## One link, one tap — live multiplayer pass — 2026-10-14
+
+The whole evening is now: create → send one link → everyone taps who they are →
+draft live → publish the teams. No names to type, no codes to keep.
+
+### Joining
+
+- **Role picker as the front door.** Opening the link asks one question, *מי אתה?*,
+  with a big card per seat naming its captain ("קפטן אדום · יוסי"), the host seat,
+  and "אני רק צופה". One tap and you are in the live lobby or draft. Replaces the
+  nickname form plus the separate team-claim step. Watchers write nothing.
+- **Remembered on the phone.** A refresh, a locked screen or reopening the link
+  goes straight back in — the seat is keyed by the device id already kept in
+  `localStorage`, and "just watching" is remembered locally.
+- **Taken seats are obvious, and recoverable in one tap.** A claimed seat shows
+  "תפוס" with "זה אני — המשך כאן" under it, which moves the seat to this phone.
+  The old phone is told ("התפקיד שלך עבר לטלפון אחר") and drops back to the
+  picker. The same tap on the host seat moves the host — replacing the 4-character
+  host key, which is no longer shown anywhere.
+- Tapping your own chip in the top bar reopens the picker to switch seats.
+
+### Drafting
+
+- **One write per pick, pinned to the pick number.** Tapping a player now only
+  selects it on your phone; "בחר אותו" in the sheet writes the pick in a single
+  transaction that is refused unless the board is still on that exact pick. This
+  rules out duplicate picks, double taps (snake order gives one team two picks in
+  a row at every turn), two tabs of the same captain, and stale screens — and a
+  phone that locks between the two taps no longer leaves a pending pick stalling
+  the draft, because nothing half-done is ever stored.
+- **Instant on the picking phone.** The confirmed pick is drawn immediately
+  (gently pulsing, "שומר…") and replaced by the server's copy a moment later; a
+  rejected pick is taken back with a clear reason.
+- **No native `confirm()` anywhere.** "Start without all captains", "free a seat"
+  and "leave on this device" used `confirm()`, which WhatsApp's in-app browser can
+  swallow — leaving the host unable to start. They are now direct, clearly labelled
+  actions (all non-destructive).
+- **Reset is limited to the host and the captains.** Watchers no longer need to
+  register, so the reset menu is no longer open to everyone in the WhatsApp group.
+
+### Host
+
+- **Captains in three taps.** Kits are assigned in tap order (red, white, black);
+  tapping a shirt still swaps them.
+- **Big "שלח בוואטסאפ" invite** on the lobby, with copy-link next to it. Links are
+  real `<a>` elements, which in-app browsers follow even where they block
+  scripted pop-ups.
+- Start is held until all three captains are in, with "להתחיל עכשיו — אני אבחר
+  בשביל …" beside it. The host can free a seat from the menu and pick for that team.
+- **"פרסם את הקבוצות בוואטסאפ"** is the host's button on the results screen.
+
+### Rosters of any size
+
+- 18-player evenings (or anything from 6 to 21) work end to end; the paste screen
+  shows what the count means ("18 שחקנים · 6 בכל קבוצה").
+- **WhatsApp's invisible characters are stripped.** A numbered list copied out of
+  WhatsApp carries a WORD JOINER (U+2060) after each number; it used to ride along
+  inside 14 of the 18 names — into the published text and past the duplicate-name
+  check.
+
+### Infrastructure
+
+- No schema or rules change: the new client works against the rules already
+  deployed to `draft21-eabc3`, and existing games keep working.
+- `tests/e2e.mjs`: a repeatable multi-phone end-to-end test against the Firestore
+  emulator (or production with `npm run test:prod`) — see the README. Kept in its
+  own `tests/package.json` so the static deploy never installs it; `.vercelignore`
+  keeps it off the site.
+- `?emu=host:port` connects to a local emulator (localhost pages only).
+- Manifest colours match the app (the launch splash flashed blue), and the page
+  has a description and Open Graph title for the WhatsApp link preview.
+
+### Verified
+
+- Emulator: complete drafts with 21 players (66/66 checks) and with the 18-player
+  WhatsApp list (64/64), repeatedly.
+- Production Firestore: the 18-player run, 63/63 — host, three captains and a
+  watcher on separate phone-sized browsers, plus the race, refresh,
+  offline/reconnect, seat and host takeover, and missing-captain scenarios.
+
 ## Reset all the way back to the player list — 2026-08-13
 
 - **A second, deeper reset: "התחל מאפס — רשימה חדשה".** The picks-only reset kept
